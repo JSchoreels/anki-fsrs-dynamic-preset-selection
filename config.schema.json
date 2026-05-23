@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "presets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "fsrs_version",
+          "params",
+          "desired_retention",
+          "historical_retention"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^addon:"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fsrs_version": {
+            "type": "string",
+            "enum": ["seven", "six", "five", "four"]
+          },
+          "params": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "desired_retention": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          },
+          "historical_retention": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          },
+          "ignore_revlogs_before_date": {
+            "type": "string"
+          },
+          "deck": {
+            "type": "string"
+          },
+          "search": {
+            "type": "string"
+          },
+          "first_grade": {
+            "type": "integer",
+            "enum": [1, 2, 3, 4]
+          },
+          "include_same_day_reviews": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["search", "preset_id"],
+        "properties": {
+          "search": {
+            "type": "string",
+            "minLength": 1
+          },
+          "preset_id": {
+            "type": "string",
+            "pattern": "^addon:"
+          }
+        }
+      }
+    }
+  }
+}
