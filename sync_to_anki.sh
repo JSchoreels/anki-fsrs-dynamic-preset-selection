@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-ADDON_DIR="/Users/jschoreels/Library/Application Support/Anki2/addons21/1885246001"
+ADDON_DIR="/Users/jschoreels/Library/Application Support/Anki2/addons21/1798968356"
 
 mkdir -p "$ADDON_DIR"
 

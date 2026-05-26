@@ -18,5 +18,5 @@ Run:
 
 The script copies runtime files from the source repo into Anki's installed
 add-on directory at
-`/Users/jschoreels/Library/Application Support/Anki2/addons21/1885246001`.
+`/Users/jschoreels/Library/Application Support/Anki2/addons21/1798968356`.
 It does not remove Anki-owned files such as `meta.json`.

@@ -3,7 +3,7 @@
 This add-on has two common maintenance traps:
 
 - Anki loads the installed add-on from
-  `/Users/jschoreels/Library/Application Support/Anki2/addons21/1885246001`.
+  `/Users/jschoreels/Library/Application Support/Anki2/addons21/1798968356`.
   The source repo is
   `/Users/jschoreels/workspace/anki-fsrs-dynamic-preset-selection`. After
   editing source files, run `./sync_to_anki.sh` and reload or restart Anki

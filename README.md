@@ -70,7 +70,7 @@ preset.
 ## Development
 
 Anki loads the installed add-on from
-`~/Library/Application Support/Anki2/addons21/1885246001`, not directly from
+`~/Library/Application Support/Anki2/addons21/1798968356`, not directly from
 this source repo. Copy changed runtime files into that folder and reload or
 restart Anki before testing in the app.
 
