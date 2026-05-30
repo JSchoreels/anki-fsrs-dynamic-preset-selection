@@ -60,6 +60,57 @@
           },
           "include_same_day_reviews": {
             "type": "boolean"
+          },
+          "fsrs_dynamic_desired_retention_enabled": {
+            "type": "boolean"
+          },
+          "fsrs_dynamic_desired_retention_review_limit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "fsrs_dynamic_desired_retention_max_cost_perday_minutes": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "fsrs_dynamic_desired_retention_params": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "fsrs_dynamic_desired_retention_weights": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "fsrs_dynamic_desired_retention_avg_drs": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "fsrs_dynamic_desired_retention_fsrs_eq_weights": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "fsrs_dynamic_desired_retention_fsrs_eq_drs": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "fsrs_dynamic_desired_retention_min": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "exclusiveMaximum": 1
+          },
+          "fsrs_dynamic_desired_retention_max": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "exclusiveMaximum": 1
           }
         }
       }

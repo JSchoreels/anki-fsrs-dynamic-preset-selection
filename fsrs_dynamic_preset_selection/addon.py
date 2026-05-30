@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from logging import Logger
+from types import SimpleNamespace
 from typing import Any
 
 from aqt import gui_hooks, mw
@@ -19,6 +20,7 @@ class FsrsDynamicPresetSelectionAddon:
         self._logger = logger
         self._config = DynamicPresetSelectionConfig(presets=(), rules=())
         self._config_action: QAction | None = None
+        self._config_dialog: Any | None = None
 
     def setup(self) -> None:
         self._reload_config()
@@ -71,10 +73,21 @@ class FsrsDynamicPresetSelectionAddon:
 
         preset, search = match
 
-        from aqt.browser.card_info import CardInfoRow
-
-        rows.append(CardInfoRow(label="Dynamic FSRS Preset", value=preset.name))
-        rows.append(CardInfoRow(label="Dynamic FSRS Preset Match", value=search))
+        rows.append(_card_info_row(label="Dynamic FSRS Preset", value=preset.name))
+        rows.append(_card_info_row(label="Dynamic FSRS Preset Match", value=search))
+        adr_mapping = _card_info_adr_mapping_value(
+            collection=mw.col,
+            card=card,
+            desired_retention=_card_info_desired_retention(
+                collection=mw.col,
+                card=card,
+                preset_desired_retention=preset.desired_retention,
+                logger=self._logger,
+            ),
+            logger=self._logger,
+        )
+        if adr_mapping is not None:
+            rows.append(_card_info_row(label="Effective Dynamic ADR", value=adr_mapping))
 
     def _add_tools_menu_entry(self) -> None:
         if self._config_action is not None or mw is None:
@@ -86,6 +99,11 @@ class FsrsDynamicPresetSelectionAddon:
     def _open_config_dialog(self) -> bool:
         if mw is None:
             return False
+
+        if self._config_dialog is not None:
+            self._config_dialog.raise_()
+            self._config_dialog.activateWindow()
+            return True
 
         try:
             from .dialog import FsrsPresetConfigDialog
@@ -103,25 +121,122 @@ class FsrsDynamicPresetSelectionAddon:
             )
             return False
 
-        if not dialog.exec():
-            return True
+        self._config_dialog = dialog
 
-        try:
-            self._reload_config()
-            if mw.col is not None:
-                self._apply_to_collection(mw.col)
-        except ConfigError as exc:
-            self._logger.warning("invalid FSRS dynamic preset config: %s", exc)
-            showWarning(f"FSRS Dynamic Preset Selection config is invalid:\n\n{exc}")
-        except Exception as exc:
-            self._logger.exception("failed to apply FSRS preset overlay")
-            showWarning(f"Failed to apply FSRS Dynamic Preset Selection:\n\n{exc}")
+        def on_finished(result: int) -> None:
+            self._config_dialog = None
+            if not result:
+                return
+
+            try:
+                self._reload_config()
+                if mw.col is not None:
+                    self._apply_to_collection(mw.col)
+            except ConfigError as exc:
+                self._logger.warning("invalid FSRS dynamic preset config: %s", exc)
+                showWarning(f"FSRS Dynamic Preset Selection config is invalid:\n\n{exc}")
+            except Exception as exc:
+                self._logger.exception("failed to apply FSRS preset overlay")
+                showWarning(f"Failed to apply FSRS Dynamic Preset Selection:\n\n{exc}")
+
+        qconnect(dialog.finished, on_finished)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
         return True
 
 
 def setup() -> None:
     logger = AddonManager.get_logger(__name__)
     FsrsDynamicPresetSelectionAddon(module=__name__, logger=logger).setup()
+
+
+def _card_info_row(label: str, value: str) -> Any:
+    try:
+        from aqt.browser.card_info import CardInfoRow
+    except ImportError:
+        return SimpleNamespace(label=label, value=value)
+
+    return CardInfoRow(label=label, value=value)
+
+
+def _card_info_adr_mapping_value(
+    *,
+    collection: Any,
+    card: Any,
+    desired_retention: float,
+    logger: Logger,
+) -> str | None:
+    scheduler = getattr(collection, "sched", None)
+    get_scheduling_states = getattr(scheduler, "get_scheduling_states", None)
+    if not callable(get_scheduling_states):
+        logger.debug("Card Info ADR mapping skipped: scheduling-state API unavailable")
+        return None
+
+    try:
+        states = get_scheduling_states(
+            card.id,
+            desired_retention_override=desired_retention,
+        )
+    except Exception:
+        logger.debug(
+            "Card Info ADR mapping skipped: scheduling-state read failed for card %s",
+            getattr(card, "id", None),
+            exc_info=True,
+        )
+        return None
+
+    if not hasattr(states, "dynamic_desired_retentions"):
+        return None
+
+    retentions = list(getattr(states, "dynamic_desired_retentions"))
+    requested = _format_retention_percent(desired_retention)
+    if len(retentions) == 4:
+        grade_parts = [
+            f"{grade} {_format_retention_percent(retention)}"
+            for grade, retention in zip(("Again", "Hard", "Good", "Easy"), retentions)
+        ]
+        return f"{requested} -> {', '.join(grade_parts)}"
+
+    if bool(getattr(states, "dynamic_desired_retention_enabled", False)):
+        return f"{requested} -> fixed DR"
+
+    return None
+
+
+def _card_info_desired_retention(
+    *,
+    collection: Any,
+    card: Any,
+    preset_desired_retention: float,
+    logger: Logger,
+) -> float:
+    try:
+        from dynamic_desired_retention import effective_desired_retention
+    except ImportError:
+        return preset_desired_retention
+
+    try:
+        desired_retention = effective_desired_retention(
+            collection=collection,
+            card=card,
+            current_desired_retention=preset_desired_retention,
+        )
+    except Exception:
+        logger.debug(
+            "Card Info ADR mapping skipped Dynamic DR effective retention for card %s",
+            getattr(card, "id", None),
+            exc_info=True,
+        )
+        return preset_desired_retention
+
+    if desired_retention is None:
+        return preset_desired_retention
+    return float(desired_retention)
+
+
+def _format_retention_percent(value: float) -> str:
+    return f"{value * 100:.2f}%"
 
 
 def matched_dynamic_preset_for_card(

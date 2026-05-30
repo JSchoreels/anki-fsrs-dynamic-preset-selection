@@ -30,6 +30,19 @@ This is an add-on optimization setting and is not written into
 resolution. If the field is missing, the optimizer reads the selected deck's
 legacy deck config once for backward compatibility.
 
+For FSRS-7 presets, the add-on config may also store native Dynamic DR policy
+data under `fsrs_dynamic_desired_retention_*`. The dialog writes the ADR enabled
+flag from the ADR checkbox and stores the policy/calibration fields returned by
+Anki core optimization. `fsrsPresetOverlay` includes those ADR fields only when
+the preset is enabled and has complete policy data. The dialog displays the
+valid target average DR range from the stored calibration average DRs. Saving is
+blocked when a preset has ADR enabled but has not been optimized yet.
+The add-on config also stores ADR training simulator overrides:
+`fsrs_dynamic_desired_retention_review_limit` and
+`fsrs_dynamic_desired_retention_max_cost_perday_minutes`. These values are sent
+to optimization only; they are not written into `fsrsPresetOverlay` because
+review-time scheduling uses the trained policy/calibration output instead.
+
 The config dialog derives add-on preset ids from preset names. It stores the
 derived ids in the add-on config and writes them to `fsrsPresetOverlay`, but the
 dialog does not expose ids as editable data.
@@ -43,14 +56,31 @@ once and excludes those card ids from the unselected count. These count reads
 do not write collection data.
 
 Optimizing one preset reads that draft preset's `include_same_day_reviews`
-value and updates `params` in the dialog's draft add-on config only. Optimize
-All sends one batch optimizer request to Anki core with each draft preset's
-generated search, current params, FSRS version, relearning step count, and
-same-day review training flag. Anki core reads review logs for those searches
-and returns optimized params per preset; the add-on stores them only in the
-dialog draft until the user saves. The updated params are written to the local
-add-on config and then to `fsrsPresetOverlay` only when the user saves the
-dialog.
+value and updates `params` in the dialog's draft add-on config only. Single
+optimize and Optimize All both build the draft ordered rule list first, then
+send an effective search for each preset: every rule that assigns that preset,
+with all earlier rules subtracted, matching Anki core's first-match scheduling
+semantics. Optimize All sends one batch optimizer request to Anki core with
+each draft preset's effective search, current params, FSRS version, relearning
+step count, same-day review training flag, ADR enabled flag, and ADR simulator
+limit overrides. Anki core
+reads review logs for those searches and returns optimized params per preset.
+When ADR is enabled, Anki core also returns ADR policy params, calibration
+weights, calibration average DRs, FSRS-equivalent DR calibration pairs, and
+retention bounds. The average-DR calibration weights returned by Anki core are
+simulation-backed bisection results against average ADR DR targets; the
+FSRS-equivalent calibration maps the table's fixed-FSRS DR to the ADR cost
+weight used by review scheduling and visualization. The add-on stores those
+values only in the dialog draft until the user saves. The updated values are
+written to the local add-on config and then to `fsrsPresetOverlay` only when
+the user saves the dialog.
+
+The config dialog's ADR visualizer reads the selected row's draft ADR policy,
+calibration, retention bounds, and desired retention. Moving the DR control in
+the visualizer only changes the temporary plotted cost weight. Pressing
+`Save DR` writes the visualizer's target back to the selected row's
+`desired_retention` spinbox; the add-on config and collection overlay are still
+unchanged until the main config dialog is saved.
 
 When optimizing a preset, the add-on reads the selected deck's legacy deck
 config dict with `collection.decks.config_dict_for_deck_id()` only when
@@ -72,3 +102,15 @@ the current ordered generated and advanced rules for the Card Info card and
 appends display-only rows for the dynamic FSRS preset match. This reads search
 results for each rule combined with `cid:<card id>`. It does not create, update,
 or delete collection data.
+
+When the matched preset has a desired retention, Card Info also asks Anki's
+scheduler for fresh scheduling states with a desired-retention override. If the
+Dynamic Desired Retention add-on API is available, this add-on first asks it for
+the effective desired retention, using the matched preset's desired retention as
+the current value. This keeps the Card Info ADR mapping aligned with the
+review-time desired-retention override. If Anki exposes native Dynamic DR
+scheduling-state data, the add-on displays an `Effective Dynamic ADR` row with
+the Again, Hard, Good, and Easy ADR mapping. If Anki reports Dynamic DR is
+enabled but returns no mapping, Card Info displays that the effective desired
+retention uses fixed DR. Older Anki builds without these scheduling-state fields
+skip the extra row.

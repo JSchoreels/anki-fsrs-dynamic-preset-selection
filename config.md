@@ -17,6 +17,19 @@ Anki's synced `fsrsPresetOverlay` config.
 - `include_same_day_reviews`: optional FSRS-7 optimize flag edited by the
   Same-day Reviews checkbox. When present, optimization uses this value instead
   of reading the selected deck option.
+- `fsrs_dynamic_desired_retention_enabled`: optional FSRS-7 ADR flag edited by
+  the ADR checkbox. When enabled, optimization asks Anki core to train native
+  Dynamic DR policy data for the preset.
+- `fsrs_dynamic_desired_retention_review_limit`: optional positive integer
+  review limit used by the ADR training simulator. Defaults to `9999`.
+- `fsrs_dynamic_desired_retention_max_cost_perday_minutes`: optional positive
+  daily time budget, in minutes, used by the ADR training simulator. Defaults
+  to `720`.
+- `fsrs_dynamic_desired_retention_params`, `weights`, `avg_drs`,
+  `fsrs_eq_weights`, `fsrs_eq_drs`, `min`, and `max`: native Dynamic DR policy
+  and calibration data returned by Anki core. The dialog shows the valid target
+  average DR range from `avg_drs`; visualization can use `fsrs_eq_*` to map the
+  table's fixed-FSRS DR to the ADR cost weight.
 
 ## `rules`
 
@@ -41,8 +54,12 @@ unselected cards.
 
 The dialog can optimize one preset row or optimize all visible preset rows.
 Optimization uses each row's `include_same_day_reviews` value and updates each
-preset's `params` value in the draft config. Save is still required to persist
-those new params to the add-on config.
+preset's `params` value in the draft config. If ADR is enabled for a row,
+optimization also stores native Dynamic DR policy and calibration output and
+shows the valid target average DR range. Save is still required to persist those
+new values to the add-on config. The Visualize ADR action opens the selected
+row's trained ADR curve with a temporary DR selector; pressing Save DR in that
+window copies the selected value back to the row's `desired_retention` field.
 
 Anki core rejects rule searches that use `prop:r`, `prop:s`, or `prop:d`,
 because those values depend on FSRS preset resolution.

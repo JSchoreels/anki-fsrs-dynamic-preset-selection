@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import fsrs_dynamic_preset_selection.addon as addon_module
 from fsrs_dynamic_preset_selection.addon import (
@@ -102,4 +103,160 @@ def test_addon_adds_dynamic_fsrs_preset_card_info_rows(monkeypatch) -> None:
     assert [(row.label, row.value) for row in rows] == [
         ("Dynamic FSRS Preset", "First"),
         ("Dynamic FSRS Preset Match", 'deck:"Japanese"'),
+    ]
+
+
+def test_addon_adds_dynamic_adr_card_info_row(monkeypatch) -> None:
+    class DynamicAdrScheduler:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def get_scheduling_states(
+            self,
+            card_id: int,
+            desired_retention_override: float | None = None,
+        ) -> object:
+            self.calls.append((card_id, desired_retention_override))
+            return SimpleNamespace(
+                dynamic_desired_retentions=[0.7, 0.8, 0.9, 0.95],
+            )
+
+    class DynamicAdrCollection(FakeCollection):
+        def __init__(self) -> None:
+            super().__init__({'deck:"Japanese" AND cid:123'})
+            self.sched = DynamicAdrScheduler()
+
+    collection = DynamicAdrCollection()
+    addon = FsrsDynamicPresetSelectionAddon(
+        module="test",
+        logger=logging.getLogger("test"),
+    )
+    addon._config = _config()
+    rows = []
+
+    monkeypatch.setattr(
+        addon_module,
+        "mw",
+        SimpleNamespace(col=collection),
+    )
+
+    addon.add_card_info_rows(rows, FakeCard())
+
+    assert [(row.label, row.value) for row in rows] == [
+        ("Dynamic FSRS Preset", "First"),
+        ("Dynamic FSRS Preset Match", 'deck:"Japanese"'),
+        (
+            "Effective Dynamic ADR",
+            "90.00% -> Again 70.00%, Hard 80.00%, Good 90.00%, Easy 95.00%",
+        ),
+    ]
+    assert collection.sched.calls == [(123, 0.9)]
+
+
+def test_addon_adds_fixed_dr_card_info_row_for_dynamic_dr_without_mapping(
+    monkeypatch,
+) -> None:
+    class FixedDrScheduler:
+        def get_scheduling_states(
+            self,
+            card_id: int,
+            desired_retention_override: float | None = None,
+        ) -> object:
+            return SimpleNamespace(
+                dynamic_desired_retention_enabled=True,
+                dynamic_desired_retentions=[],
+            )
+
+    class FixedDrCollection(FakeCollection):
+        def __init__(self) -> None:
+            super().__init__({'deck:"Japanese" AND cid:123'})
+            self.sched = FixedDrScheduler()
+
+    addon = FsrsDynamicPresetSelectionAddon(
+        module="test",
+        logger=logging.getLogger("test"),
+    )
+    addon._config = _config()
+    rows = []
+
+    monkeypatch.setattr(
+        addon_module,
+        "mw",
+        SimpleNamespace(col=FixedDrCollection()),
+    )
+
+    addon.add_card_info_rows(rows, FakeCard())
+
+    assert [(row.label, row.value) for row in rows] == [
+        ("Dynamic FSRS Preset", "First"),
+        ("Dynamic FSRS Preset Match", 'deck:"Japanese"'),
+        ("Effective Dynamic ADR", "90.00% -> fixed DR"),
+    ]
+
+
+def test_addon_uses_effective_dynamic_dr_for_dynamic_adr_card_info_row(
+    monkeypatch,
+) -> None:
+    dynamic_dr_module = ModuleType("dynamic_desired_retention")
+    dynamic_dr_calls = []
+
+    def effective_desired_retention(
+        *,
+        collection: object,
+        card: object,
+        current_desired_retention: float | None,
+        answer_grade: str | None = None,
+    ) -> float:
+        dynamic_dr_calls.append(
+            (getattr(card, "id", None), current_desired_retention, answer_grade)
+        )
+        return 0.64
+
+    dynamic_dr_module.effective_desired_retention = effective_desired_retention
+    monkeypatch.setitem(sys.modules, "dynamic_desired_retention", dynamic_dr_module)
+
+    class DynamicAdrScheduler:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def get_scheduling_states(
+            self,
+            card_id: int,
+            desired_retention_override: float | None = None,
+        ) -> object:
+            self.calls.append((card_id, desired_retention_override))
+            return SimpleNamespace(
+                dynamic_desired_retentions=[0.62, 0.64, 0.66, 0.68],
+            )
+
+    class DynamicAdrCollection(FakeCollection):
+        def __init__(self) -> None:
+            super().__init__({'deck:"Japanese" AND cid:123'})
+            self.sched = DynamicAdrScheduler()
+
+    collection = DynamicAdrCollection()
+    addon = FsrsDynamicPresetSelectionAddon(
+        module="test",
+        logger=logging.getLogger("test"),
+    )
+    addon._config = _config()
+    rows = []
+
+    monkeypatch.setattr(
+        addon_module,
+        "mw",
+        SimpleNamespace(col=collection),
+    )
+
+    addon.add_card_info_rows(rows, FakeCard())
+
+    assert dynamic_dr_calls == [(123, 0.9, None)]
+    assert collection.sched.calls == [(123, 0.64)]
+    assert [(row.label, row.value) for row in rows] == [
+        ("Dynamic FSRS Preset", "First"),
+        ("Dynamic FSRS Preset Match", 'deck:"Japanese"'),
+        (
+            "Effective Dynamic ADR",
+            "64.00% -> Again 62.00%, Hard 64.00%, Good 66.00%, Easy 68.00%",
+        ),
     ]

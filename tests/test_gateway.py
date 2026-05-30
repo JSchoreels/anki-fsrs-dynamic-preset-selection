@@ -11,6 +11,7 @@ from fsrs_dynamic_preset_selection.gateway import (
     deck_unselected_counts,
     optimize_preset,
     optimize_presets_batch,
+    OptimizePresetResult,
 )
 import fsrs_dynamic_preset_selection.gateway as gateway
 from fsrs_dynamic_preset_selection.models import AddonFsrsPresetConfig
@@ -76,7 +77,20 @@ class FakeBackend:
 
     def compute_fsrs_params(self, **kwargs: object) -> object:
         self.kwargs = kwargs
-        return {"params": [1.0, 2.0, 3.0], "fsrs_items": 42}
+        response = {"params": [1.0, 2.0, 3.0], "fsrs_items": 42}
+        if kwargs.get("dynamic_desired_retention_enabled"):
+            response.update(
+                {
+                    "fsrs_dynamic_desired_retention_params": [0.0] * 15,
+                    "fsrs_dynamic_desired_retention_weights": [0.0, 15.0],
+                    "fsrs_dynamic_desired_retention_avg_drs": [0.9, 0.8],
+                    "fsrs_dynamic_desired_retention_fsrs_eq_weights": [0.0, 15.0],
+                    "fsrs_dynamic_desired_retention_fsrs_eq_drs": [0.91, 0.81],
+                    "fsrs_dynamic_desired_retention_min": 0.3,
+                    "fsrs_dynamic_desired_retention_max": 0.995,
+                }
+            )
+        return response
 
     def compute_fsrs_params_batch(self, **kwargs: object) -> object:
         self.batch_kwargs = kwargs
@@ -149,10 +163,10 @@ def test_optimize_preset_uses_generated_search_and_version():
         first_grade=1,
     )
 
-    fsrs_items, params = optimize_preset(collection, preset)
+    result = optimize_preset(collection, preset)
 
-    assert fsrs_items == 42
-    assert params == (1.0, 2.0, 3.0)
+    assert result.fsrs_items == 42
+    assert result.params == (1.0, 2.0, 3.0)
     assert collection._backend.kwargs == {
         "search": 'deck:"Medical" firstgrade:1 tag:extra',
         "ignore_revlogs_before_ms": 0,
@@ -161,7 +175,36 @@ def test_optimize_preset_uses_generated_search_and_version():
         "health_check": False,
         "include_same_day_reviews": False,
         "fsrs_version": 7,
+        "dynamic_desired_retention_enabled": False,
     }
+
+
+def test_optimize_preset_uses_effective_ordered_rule_slice():
+    collection = FakeCollectionWithBackend()
+    preset = AddonFsrsPresetConfig(
+        id="addon:test:hard",
+        name="Hard",
+        fsrs_version="seven",
+        params=(0.1, 0.2),
+        desired_retention=0.9,
+        historical_retention=0.8,
+        deck="Medical",
+        first_grade=2,
+    )
+
+    optimize_preset(
+        collection,
+        preset,
+        [
+            {"search": 'deck:"Medical" firstgrade:1', "preset_id": "addon:test:again"},
+            {"search": 'deck:"Medical" firstgrade:2', "preset_id": "addon:test:hard"},
+        ],
+    )
+
+    assert collection._backend.kwargs is not None
+    assert collection._backend.kwargs["search"] == (
+        '(deck:"Medical" firstgrade:2) -(deck:"Medical" firstgrade:1)'
+    )
 
 
 def test_optimize_preset_uses_preset_same_day_flag_before_deck_flag():
@@ -181,6 +224,41 @@ def test_optimize_preset_uses_preset_same_day_flag_before_deck_flag():
 
     assert collection._backend.kwargs is not None
     assert collection._backend.kwargs["include_same_day_reviews"] is True
+
+
+def test_optimize_preset_requests_dynamic_dr_and_reads_policy():
+    collection = FakeCollectionWithBackend()
+    preset = AddonFsrsPresetConfig(
+        id="addon:test:medical",
+        name="Medical",
+        fsrs_version="seven",
+        params=(0.1, 0.2),
+        desired_retention=0.9,
+        historical_retention=0.8,
+        deck="Medical",
+        fsrs_dynamic_desired_retention_enabled=True,
+        fsrs_dynamic_desired_retention_review_limit=123,
+        fsrs_dynamic_desired_retention_max_cost_perday_minutes=45.0,
+    )
+
+    result = optimize_preset(collection, preset)
+
+    assert collection._backend.kwargs is not None
+    assert collection._backend.kwargs["dynamic_desired_retention_enabled"] is True
+    assert collection._backend.kwargs["dynamic_desired_retention_review_limit"] == 123
+    assert (
+        collection._backend.kwargs[
+            "dynamic_desired_retention_max_cost_perday_minutes"
+        ]
+        == 45.0
+    )
+    assert result.fsrs_dynamic_desired_retention_params == (0.0,) * 15
+    assert result.fsrs_dynamic_desired_retention_weights == (0.0, 15.0)
+    assert result.fsrs_dynamic_desired_retention_avg_drs == (0.9, 0.8)
+    assert result.fsrs_dynamic_desired_retention_fsrs_eq_weights == (0.0, 15.0)
+    assert result.fsrs_dynamic_desired_retention_fsrs_eq_drs == (0.91, 0.81)
+    assert result.fsrs_dynamic_desired_retention_min == 0.3
+    assert result.fsrs_dynamic_desired_retention_max == 0.995
 
 
 def test_optimize_preset_respects_preset_same_day_disabled_before_deck_flag():
@@ -230,7 +308,10 @@ def test_optimize_presets_batch_uses_single_backend_call():
 
     results = optimize_presets_batch(collection, presets)
 
-    assert results == [(10, (0.0, 1.0)), (11, (1.0, 2.0))]
+    assert results == [
+        OptimizePresetResult(fsrs_items=10, params=(0.0, 1.0)),
+        OptimizePresetResult(fsrs_items=11, params=(1.0, 2.0)),
+    ]
     assert collection._backend.kwargs is None
     assert collection._backend.batch_kwargs == {
         "items": [
@@ -243,6 +324,7 @@ def test_optimize_presets_batch_uses_single_backend_call():
                 "num_of_relearning_steps": 2,
                 "include_same_day_reviews": False,
                 "fsrs_version": 7,
+                "dynamic_desired_retention_enabled": False,
             },
             {
                 "id": "addon:test:hard",
@@ -253,9 +335,50 @@ def test_optimize_presets_batch_uses_single_backend_call():
                 "num_of_relearning_steps": 2,
                 "include_same_day_reviews": True,
                 "fsrs_version": 7,
+                "dynamic_desired_retention_enabled": False,
             },
         ]
     }
+
+
+def test_optimize_presets_batch_uses_effective_ordered_rule_slices():
+    collection = FakeCollectionWithBackend()
+    presets = [
+        AddonFsrsPresetConfig(
+            id="addon:test:again",
+            name="Again",
+            fsrs_version="seven",
+            params=(0.1, 0.2),
+            desired_retention=0.9,
+            historical_retention=0.8,
+            deck="Medical",
+            first_grade=1,
+        ),
+        AddonFsrsPresetConfig(
+            id="addon:test:hard",
+            name="Hard",
+            fsrs_version="seven",
+            params=(0.3, 0.4),
+            desired_retention=0.9,
+            historical_retention=0.8,
+            deck="Medical",
+            first_grade=2,
+        ),
+    ]
+    ordered_rules = [
+        {"search": 'deck:"Medical" firstgrade:1', "preset_id": "addon:test:again"},
+        {"search": 'deck:"Medical" firstgrade:2', "preset_id": "addon:test:hard"},
+    ]
+
+    optimize_presets_batch(collection, presets, ordered_rules)
+
+    assert collection._backend.batch_kwargs is not None
+    assert collection._backend.batch_kwargs["items"][0]["search"] == (
+        '(deck:"Medical" firstgrade:1)'
+    )
+    assert collection._backend.batch_kwargs["items"][1]["search"] == (
+        '(deck:"Medical" firstgrade:2) -(deck:"Medical" firstgrade:1)'
+    )
 
 
 class FakeComputeFsrsParamsRequest:
@@ -321,10 +444,10 @@ def test_optimize_preset_supports_raw_backend(monkeypatch):
         deck="Medical",
     )
 
-    fsrs_items, params = optimize_preset(collection, preset)
+    result = optimize_preset(collection, preset)
 
-    assert fsrs_items == 12
-    assert params == (4.0, 5.0)
+    assert result.fsrs_items == 12
+    assert result.params == (4.0, 5.0)
     assert collection._backend.called
     assert collection._backend.request.include_same_day_reviews is False
 

@@ -16,10 +16,12 @@ from aqt.qt import (
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTreeWidget,
     QTreeWidgetItem,
+    Qt,
     QVBoxLayout,
     QWidget,
     qconnect,
@@ -48,14 +50,31 @@ COL_SPLIT = 3
 COL_GRADE = 4
 COL_VERSION = 5
 COL_SAME_DAY = 6
-COL_DESIRED_RETENTION = 7
-COL_HISTORICAL_RETENTION = 8
-COL_PARAMS = 9
-COL_SELECTED_COUNT = 10
-COL_OPTIMIZE = 11
+COL_ADR = 7
+COL_ADR_REVIEW_LIMIT = 8
+COL_ADR_DAILY_MINUTES = 9
+COL_ADR_RANGE = 10
+COL_DESIRED_RETENTION = 11
+COL_HISTORICAL_RETENTION = 12
+COL_PARAMS = 13
+COL_SELECTED_COUNT = 14
+COL_OPTIMIZE = 15
+
+DEFAULT_ADR_REVIEW_LIMIT = 9999
+DEFAULT_ADR_DAILY_MINUTES = 720.0
+
+DECK_COUNTS_SHOW_TEXT = "See Deck Cards Not Selected"
+DECK_COUNTS_HIDE_TEXT = "Hide Deck Cards Not Selected"
 
 ROLE_OLD_ID = 0x0100
 ROLE_FIRST_GRADE = 0x0101
+ROLE_ADR_PARAMS = 0x0102
+ROLE_ADR_WEIGHTS = 0x0103
+ROLE_ADR_AVG_DRS = 0x0104
+ROLE_ADR_MIN = 0x0105
+ROLE_ADR_MAX = 0x0106
+ROLE_ADR_FSRS_EQ_WEIGHTS = 0x0107
+ROLE_ADR_FSRS_EQ_DRS = 0x0108
 
 FSRS_VERSIONS: tuple[tuple[str, FsrsPresetVersion], ...] = (
     ("7", "seven"),
@@ -69,7 +88,7 @@ FIRST_GRADES = (1, 2, 3, 4)
 
 class FsrsPresetConfigDialog(QDialog):
     def __init__(self, parent: QWidget, *, addon_manager: Any, module: str) -> None:
-        super().__init__(parent)
+        super().__init__(parent, Qt.WindowType.Window)
         self._addon_manager = addon_manager
         self._module = module
         self._raw_config = addon_manager.getConfig(module) or {}
@@ -90,7 +109,7 @@ class FsrsPresetConfigDialog(QDialog):
         layout.addWidget(QLabel("Add-on FSRS presets"))
 
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(12)
+        self.tree.setColumnCount(16)
         self.tree.setHeaderLabels(
             [
                 "Name",
@@ -100,6 +119,10 @@ class FsrsPresetConfigDialog(QDialog):
                 "Grade",
                 "FSRS Version",
                 "Same-day Reviews",
+                "ADR",
+                "ADR Reviews",
+                "ADR Minutes",
+                "ADR Range",
                 "Desired R",
                 "Historical R",
                 "Params",
@@ -112,10 +135,38 @@ class FsrsPresetConfigDialog(QDialog):
         self.tree.header().setSectionResizeMode(
             COL_SAME_DAY, QHeaderView.ResizeMode.ResizeToContents
         )
+        self.tree.header().setSectionResizeMode(
+            COL_ADR, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tree.header().setSectionResizeMode(
+            COL_ADR_REVIEW_LIMIT, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tree.header().setSectionResizeMode(
+            COL_ADR_DAILY_MINUTES, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tree.header().setSectionResizeMode(
+            COL_ADR_RANGE, QHeaderView.ResizeMode.ResizeToContents
+        )
         self.tree.header().setSectionResizeMode(COL_PARAMS, QHeaderView.ResizeMode.Stretch)
         self.tree.headerItem().setToolTip(
             COL_SAME_DAY,
             "Include same-day reviews when optimizing this FSRS-7 preset.",
+        )
+        self.tree.headerItem().setToolTip(
+            COL_ADR,
+            "Train and use native Anki Dynamic DR for this FSRS-7 preset.",
+        )
+        self.tree.headerItem().setToolTip(
+            COL_ADR_REVIEW_LIMIT,
+            "Review limit used by the ADR training simulator for this preset.",
+        )
+        self.tree.headerItem().setToolTip(
+            COL_ADR_DAILY_MINUTES,
+            "Daily time budget in minutes used by the ADR training simulator for this preset.",
+        )
+        self.tree.headerItem().setToolTip(
+            COL_ADR_RANGE,
+            "Calibrated target average DR range available after optimization.",
         )
         layout.addWidget(self.tree)
 
@@ -124,6 +175,7 @@ class FsrsPresetConfigDialog(QDialog):
         remove_button = QPushButton("Remove Selected")
         move_up_button = QPushButton("Move Up")
         move_down_button = QPushButton("Move Down")
+        visualize_adr_button = QPushButton("Visualize ADR")
         self.optimize_all_button = QPushButton("Optimize All")
         self.optimize_all_progress = QProgressBar()
         self.optimize_all_progress.setVisible(False)
@@ -132,19 +184,28 @@ class FsrsPresetConfigDialog(QDialog):
         qconnect(remove_button.clicked, self._remove_selected_item)
         qconnect(move_up_button.clicked, lambda: self._move_selected_item(-1))
         qconnect(move_down_button.clicked, lambda: self._move_selected_item(1))
+        qconnect(visualize_adr_button.clicked, self._visualize_selected_adr)
         qconnect(self.optimize_all_button.clicked, self._optimize_all)
         qconnect(refresh_counts_button.clicked, self._refresh_counts)
         row_actions.addWidget(add_button)
         row_actions.addWidget(remove_button)
         row_actions.addWidget(move_up_button)
         row_actions.addWidget(move_down_button)
+        row_actions.addWidget(visualize_adr_button)
         row_actions.addWidget(self.optimize_all_button)
         row_actions.addWidget(self.optimize_all_progress)
         row_actions.addWidget(refresh_counts_button)
         row_actions.addStretch()
         layout.addLayout(row_actions)
 
-        layout.addWidget(QLabel("Deck cards not selected by preset queries"))
+        self.deck_counts_toggle_button = QPushButton(_deck_counts_toggle_text(False))
+        self.deck_counts_toggle_button.setCheckable(True)
+        qconnect(
+            self.deck_counts_toggle_button.toggled,
+            self._set_deck_counts_visible,
+        )
+        layout.addWidget(self.deck_counts_toggle_button)
+
         self.deck_counts_table = QTableWidget(0, 4)
         self.deck_counts_table.setHorizontalHeaderLabels(
             ["Deck", "Not Selected", "Not Selected (Non New)", "Total Cards"]
@@ -156,6 +217,7 @@ class FsrsPresetConfigDialog(QDialog):
         self.deck_counts_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
+        self.deck_counts_table.setVisible(False)
         layout.addWidget(self.deck_counts_table)
 
         buttons = QDialogButtonBox(
@@ -282,6 +344,16 @@ class FsrsPresetConfigDialog(QDialog):
             search=template.search,
             first_grade=grade,
             include_same_day_reviews=template.include_same_day_reviews,
+            fsrs_dynamic_desired_retention_enabled=template.fsrs_dynamic_desired_retention_enabled,
+            fsrs_dynamic_desired_retention_review_limit=template.fsrs_dynamic_desired_retention_review_limit,
+            fsrs_dynamic_desired_retention_max_cost_perday_minutes=template.fsrs_dynamic_desired_retention_max_cost_perday_minutes,
+            fsrs_dynamic_desired_retention_params=template.fsrs_dynamic_desired_retention_params,
+            fsrs_dynamic_desired_retention_weights=template.fsrs_dynamic_desired_retention_weights,
+            fsrs_dynamic_desired_retention_avg_drs=template.fsrs_dynamic_desired_retention_avg_drs,
+            fsrs_dynamic_desired_retention_fsrs_eq_weights=template.fsrs_dynamic_desired_retention_fsrs_eq_weights,
+            fsrs_dynamic_desired_retention_fsrs_eq_drs=template.fsrs_dynamic_desired_retention_fsrs_eq_drs,
+            fsrs_dynamic_desired_retention_min=template.fsrs_dynamic_desired_retention_min,
+            fsrs_dynamic_desired_retention_max=template.fsrs_dynamic_desired_retention_max,
         )
         child = QTreeWidgetItem(parent)
         child.setData(COL_NAME, ROLE_OLD_ID, preset.id)
@@ -297,15 +369,33 @@ class FsrsPresetConfigDialog(QDialog):
     ) -> None:
         version_combo = self._version_combo(preset.fsrs_version)
         same_day_checkbox = self._same_day_checkbox(preset)
+        adr_checkbox = self._adr_checkbox(preset)
+        adr_review_limit = self._adr_review_limit_spin(preset)
+        adr_daily_minutes = self._adr_daily_minutes_spin(preset)
         qconnect(
             version_combo.currentIndexChanged,
-            lambda _index, checkbox=same_day_checkbox, combo=version_combo: self._update_same_day_checkbox(
-                checkbox, combo.currentData()
+            lambda _index, same_day=same_day_checkbox, adr=adr_checkbox, review_limit=adr_review_limit, daily_minutes=adr_daily_minutes, combo=version_combo: self._update_fsrs7_controls(
+                same_day,
+                adr,
+                review_limit,
+                daily_minutes,
+                combo.currentData(),
             ),
         )
         self.tree.setItemWidget(item, COL_VERSION, version_combo)
         self.tree.setItemWidget(item, COL_SAME_DAY, same_day_checkbox)
-        self._update_same_day_checkbox(same_day_checkbox, preset.fsrs_version)
+        self.tree.setItemWidget(item, COL_ADR, adr_checkbox)
+        self.tree.setItemWidget(item, COL_ADR_REVIEW_LIMIT, adr_review_limit)
+        self.tree.setItemWidget(item, COL_ADR_DAILY_MINUTES, adr_daily_minutes)
+        self.tree.setItemWidget(item, COL_ADR_RANGE, self._adr_range_widget(preset))
+        self._set_adr_policy_data(item, preset)
+        self._update_fsrs7_controls(
+            same_day_checkbox,
+            adr_checkbox,
+            adr_review_limit,
+            adr_daily_minutes,
+            preset.fsrs_version,
+        )
         self.tree.setItemWidget(
             item, COL_DESIRED_RETENTION, self._retention_spin(preset.desired_retention)
         )
@@ -399,6 +489,10 @@ class FsrsPresetConfigDialog(QDialog):
         for column in (
             COL_VERSION,
             COL_SAME_DAY,
+            COL_ADR,
+            COL_ADR_REVIEW_LIMIT,
+            COL_ADR_DAILY_MINUTES,
+            COL_ADR_RANGE,
             COL_DESIRED_RETENTION,
             COL_HISTORICAL_RETENTION,
             COL_PARAMS,
@@ -488,7 +582,18 @@ class FsrsPresetConfigDialog(QDialog):
                 "presets": presets,
                 "rules": self._updated_advanced_rules(presets),
             }
-            load_config(new_config)
+            config = load_config(new_config)
+            missing_adr_policy = [
+                preset.name
+                for preset in config.presets
+                if preset.fsrs_dynamic_desired_retention_enabled
+                and not preset.has_dynamic_desired_retention_policy()
+            ]
+            if missing_adr_policy:
+                raise ConfigError(
+                    "optimize ADR-enabled presets before saving: "
+                    + ", ".join(missing_adr_policy)
+                )
         except (ConfigError, ValueError) as exc:
             showWarning(f"FSRS Dynamic Preset Selection config is invalid:\n\n{exc}", parent=self)
             return
@@ -530,6 +635,17 @@ class FsrsPresetConfigDialog(QDialog):
         }
         if fsrs_version == "seven":
             preset["include_same_day_reviews"] = self._checkbox(item, COL_SAME_DAY).isChecked()
+            preset["fsrs_dynamic_desired_retention_enabled"] = self._checkbox(
+                item, COL_ADR
+            ).isChecked()
+            preset["fsrs_dynamic_desired_retention_review_limit"] = self._int_spin(
+                item, COL_ADR_REVIEW_LIMIT
+            ).value()
+            preset["fsrs_dynamic_desired_retention_max_cost_perday_minutes"] = self._spin(
+                item, COL_ADR_DAILY_MINUTES
+            ).value()
+            adr_policy = self._adr_policy_data(item)
+            preset.update(adr_policy)
         if deck:
             preset["deck"] = deck
         if search:
@@ -594,12 +710,56 @@ class FsrsPresetConfigDialog(QDialog):
             self.deck_counts_table.setItem(row, 2, _table_item(str(unselected_non_new)))
             self.deck_counts_table.setItem(row, 3, _table_item(str(total)))
 
+    def _set_deck_counts_visible(self, visible: bool) -> None:
+        self.deck_counts_table.setVisible(visible)
+        self.deck_counts_toggle_button.setText(_deck_counts_toggle_text(visible))
+
+    def _visualize_selected_adr(self) -> None:
+        item = self.tree.currentItem()
+        if item is None:
+            showWarning("Select a preset row with optimized ADR data first.", parent=self)
+            return
+        if item.childCount():
+            showWarning("Select one split preset row to visualize ADR.", parent=self)
+            return
+
+        try:
+            from .adr_plot import valid_plot_policy
+            from aqt.dynamic_desired_retention_plot import (
+                open_dynamic_desired_retention_plot,
+            )
+
+            preset = self._config_preset_from_item(item)
+        except (ConfigError, ValueError) as exc:
+            showWarning(f"Unable to visualize ADR:\n\n{exc}", parent=self)
+            return
+
+        if not valid_plot_policy(preset):
+            showWarning("Optimize this ADR preset before visualizing it.", parent=self)
+            return
+
+        def save_target(value: float) -> None:
+            self._spin(item, COL_DESIRED_RETENTION).setValue(value)
+
+        open_dynamic_desired_retention_plot(
+            self,
+            params=preset.fsrs_dynamic_desired_retention_params,
+            calibration_weights=preset.fsrs_dynamic_desired_retention_weights,
+            calibration_avg_drs=preset.fsrs_dynamic_desired_retention_avg_drs,
+            fsrs_equivalent_weights=preset.fsrs_dynamic_desired_retention_fsrs_eq_weights,
+            fsrs_equivalent_drs=preset.fsrs_dynamic_desired_retention_fsrs_eq_drs,
+            retention_min=preset.fsrs_dynamic_desired_retention_min,
+            retention_max=preset.fsrs_dynamic_desired_retention_max,
+            target_average_dr=self._spin(item, COL_DESIRED_RETENTION).value(),
+            save_target=save_target,
+        )
+
     def _optimize_item(self, button: QPushButton) -> None:
         item = self._item_for_widget(button, COL_OPTIMIZE)
         if item is None:
             return
         try:
-            preset = self._preset_for_optimize(item)
+            preset, ordered_rules = self._optimization_context(item)
         except (ConfigError, ValueError) as exc:
             showWarning(f"Unable to optimize preset:\n\n{exc}", parent=self)
             return
@@ -607,15 +767,18 @@ class FsrsPresetConfigDialog(QDialog):
             showWarning(f"Unable to optimize preset:\n\n{exc}", parent=self)
             return
 
-        self._set_item_progress(item, value=0, text="Optimizing %p%")
+        self._set_item_progress(item, value=0, maximum=0, text="Optimizing...")
 
-        def on_success(result: tuple[int, tuple[float, ...]]) -> None:
-            fsrs_items, params = result
-            self._line_edit(item, COL_PARAMS).setText(_format_params(params))
+        def on_success(result: Any) -> None:
+            self._line_edit(item, COL_PARAMS).setText(_format_params(result.params))
+            self._apply_optimized_adr(item, preset, result)
             self._set_item_progress(item, value=100, text="Done")
             self._set_optimize_button(item)
             self._refresh_counts()
-            showInfo(f"Optimized {preset.name} with {fsrs_items} FSRS items.", parent=self)
+            showInfo(
+                f"Optimized {preset.name} with {result.fsrs_items} FSRS items.",
+                parent=self,
+            )
 
         def on_failure(exc: Exception) -> None:
             self._set_optimize_button(item)
@@ -623,12 +786,8 @@ class FsrsPresetConfigDialog(QDialog):
 
         QueryOp(
             parent=self,
-            op=lambda col: optimize_preset(col, preset),
+            op=lambda col: optimize_preset(col, preset, ordered_rules),
             success=on_success,
-        ).with_backend_progress(
-            lambda progress, update: self._update_item_compute_progress(
-                item, progress, update, preset.name
-            )
         ).failure(on_failure).run_in_background()
 
     def _optimize_all(self) -> None:
@@ -636,7 +795,7 @@ class FsrsPresetConfigDialog(QDialog):
         if not items:
             return
         try:
-            presets = [self._preset_for_optimize(item) for item in items]
+            presets, ordered_rules = self._optimization_presets_and_rules()
         except (ConfigError, ValueError) as exc:
             showWarning(f"Unable to optimize all presets:\n\n{exc}", parent=self)
             return
@@ -646,12 +805,13 @@ class FsrsPresetConfigDialog(QDialog):
 
         self._show_optimize_all_progress(len(items))
         self._set_all_item_progress_pending(items)
-        def op(col: Any) -> list[tuple[int, tuple[float, ...]]]:
-            return optimize_presets_batch(col, presets)
+        def op(col: Any) -> list[Any]:
+            return optimize_presets_batch(col, presets, ordered_rules)
 
-        def on_success(results: list[tuple[int, tuple[float, ...]]]) -> None:
-            for item, (_fsrs_items, params) in zip(items, results, strict=False):
-                self._line_edit(item, COL_PARAMS).setText(_format_params(params))
+        def on_success(results: list[Any]) -> None:
+            for item, preset, result in zip(items, presets, results, strict=False):
+                self._line_edit(item, COL_PARAMS).setText(_format_params(result.params))
+                self._apply_optimized_adr(item, preset, result)
                 self._set_item_progress(item, value=100, text="Done")
             self._refresh_counts()
             self._hide_optimize_all_progress()
@@ -675,6 +835,29 @@ class FsrsPresetConfigDialog(QDialog):
             raise ConfigError("choose a deck or enter a search filter before optimizing")
         return preset
 
+    def _optimization_context(
+        self, item: QTreeWidgetItem
+    ) -> tuple[AddonFsrsPresetConfig, list[dict[str, str]]]:
+        presets, ordered_rules = self._optimization_presets_and_rules()
+        index = list(self._leaf_items()).index(item)
+        return presets[index], ordered_rules
+
+    def _optimization_presets_and_rules(
+        self,
+    ) -> tuple[list[AddonFsrsPresetConfig], list[dict[str, str]]]:
+        preset_dicts = self._preset_dicts()
+        config = load_config(
+            {
+                "presets": preset_dicts,
+                "rules": self._updated_advanced_rules(preset_dicts),
+            }
+        )
+        ordered_rules = config.to_overlay_dict()["rules"]
+        presets = list(config.presets)
+        if not ordered_rules:
+            raise ConfigError("choose a deck or enter a search filter before optimizing")
+        return presets, ordered_rules
+
     def _set_all_item_progress_pending(self, items: list[QTreeWidgetItem]) -> None:
         for item in items:
             self._set_item_progress(item, value=0, text="Pending")
@@ -695,11 +878,11 @@ class FsrsPresetConfigDialog(QDialog):
             item,
             value=current,
             maximum=maximum,
-            text="Optimizing %p%",
+            text=_compute_params_progress_text(value),
         )
         update.max = maximum
         update.value = current
-        update.label = f"Optimizing {preset_name}"
+        update.label = f"{_compute_params_progress_label(value)} {preset_name}"
         if update.user_wants_abort:
             update.abort = True
 
@@ -718,7 +901,11 @@ class FsrsPresetConfigDialog(QDialog):
                 break
             maximum = max(preset_progress.total, 1)
             current = min(preset_progress.current, maximum)
-            text = "Skipped" if preset_progress.skipped else "Optimizing %p%"
+            text = (
+                "Skipped"
+                if preset_progress.skipped
+                else _compute_params_progress_text(preset_progress)
+            )
             if preset_progress.finished and not preset_progress.skipped:
                 text = "Done"
                 current = maximum
@@ -830,6 +1017,11 @@ class FsrsPresetConfigDialog(QDialog):
         assert isinstance(widget, QDoubleSpinBox)
         return widget
 
+    def _int_spin(self, item: QTreeWidgetItem, column: int) -> QSpinBox:
+        widget = self.tree.itemWidget(item, column)
+        assert isinstance(widget, QSpinBox)
+        return widget
+
     def _checkbox(self, item: QTreeWidgetItem, column: int) -> QCheckBox:
         widget = self.tree.itemWidget(item, column)
         assert isinstance(widget, QCheckBox)
@@ -845,6 +1037,139 @@ class FsrsPresetConfigDialog(QDialog):
         checkbox.setChecked(self._same_day_default(preset))
         return checkbox
 
+    def _adr_checkbox(self, preset: AddonFsrsPresetConfig) -> QCheckBox:
+        checkbox = QCheckBox()
+        checkbox.setText("Enable")
+        checkbox.setToolTip("Train and use native Anki Dynamic DR for this FSRS-7 preset.")
+        checkbox.setChecked(preset.fsrs_dynamic_desired_retention_enabled)
+        return checkbox
+
+    def _adr_review_limit_spin(self, preset: AddonFsrsPresetConfig) -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(1, 999999)
+        spin.setValue(
+            preset.fsrs_dynamic_desired_retention_review_limit
+            or DEFAULT_ADR_REVIEW_LIMIT
+        )
+        spin.setToolTip("Review limit used by the ADR training simulator.")
+        return spin
+
+    def _adr_daily_minutes_spin(self, preset: AddonFsrsPresetConfig) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0.1, 1440.0)
+        spin.setDecimals(1)
+        spin.setSingleStep(30.0)
+        spin.setValue(
+            preset.fsrs_dynamic_desired_retention_max_cost_perday_minutes
+            or DEFAULT_ADR_DAILY_MINUTES
+        )
+        spin.setToolTip("Daily time budget in minutes used by the ADR training simulator.")
+        return spin
+
+    def _adr_range_widget(self, preset: AddonFsrsPresetConfig) -> QLineEdit:
+        widget = QLineEdit(_adr_range_text(preset.dynamic_desired_retention_range()))
+        widget.setReadOnly(True)
+        return widget
+
+    def _set_adr_policy_data(
+        self, item: QTreeWidgetItem, preset: AddonFsrsPresetConfig
+    ) -> None:
+        item.setData(
+            COL_ADR,
+            ROLE_ADR_PARAMS,
+            tuple(preset.fsrs_dynamic_desired_retention_params),
+        )
+        item.setData(
+            COL_ADR,
+            ROLE_ADR_WEIGHTS,
+            tuple(preset.fsrs_dynamic_desired_retention_weights),
+        )
+        item.setData(
+            COL_ADR,
+            ROLE_ADR_AVG_DRS,
+            tuple(preset.fsrs_dynamic_desired_retention_avg_drs),
+        )
+        item.setData(
+            COL_ADR,
+            ROLE_ADR_FSRS_EQ_WEIGHTS,
+            tuple(preset.fsrs_dynamic_desired_retention_fsrs_eq_weights),
+        )
+        item.setData(
+            COL_ADR,
+            ROLE_ADR_FSRS_EQ_DRS,
+            tuple(preset.fsrs_dynamic_desired_retention_fsrs_eq_drs),
+        )
+        item.setData(COL_ADR, ROLE_ADR_MIN, preset.fsrs_dynamic_desired_retention_min)
+        item.setData(COL_ADR, ROLE_ADR_MAX, preset.fsrs_dynamic_desired_retention_max)
+
+    def _adr_policy_data(self, item: QTreeWidgetItem) -> dict[str, object]:
+        return {
+            "fsrs_dynamic_desired_retention_params": list(
+                item.data(COL_ADR, ROLE_ADR_PARAMS) or ()
+            ),
+            "fsrs_dynamic_desired_retention_weights": list(
+                item.data(COL_ADR, ROLE_ADR_WEIGHTS) or ()
+            ),
+            "fsrs_dynamic_desired_retention_avg_drs": list(
+                item.data(COL_ADR, ROLE_ADR_AVG_DRS) or ()
+            ),
+            "fsrs_dynamic_desired_retention_fsrs_eq_weights": list(
+                item.data(COL_ADR, ROLE_ADR_FSRS_EQ_WEIGHTS) or ()
+            ),
+            "fsrs_dynamic_desired_retention_fsrs_eq_drs": list(
+                item.data(COL_ADR, ROLE_ADR_FSRS_EQ_DRS) or ()
+            ),
+            "fsrs_dynamic_desired_retention_min": float(
+                item.data(COL_ADR, ROLE_ADR_MIN) or 0.0
+            ),
+            "fsrs_dynamic_desired_retention_max": float(
+                item.data(COL_ADR, ROLE_ADR_MAX) or 0.0
+            ),
+        }
+
+    def _apply_optimized_adr(
+        self, item: QTreeWidgetItem, preset: AddonFsrsPresetConfig, result: Any
+    ) -> None:
+        if not preset.fsrs_dynamic_desired_retention_enabled:
+            self._set_adr_policy_data(
+                item,
+                AddonFsrsPresetConfig(
+                    id=preset.id,
+                    name=preset.name,
+                    fsrs_version=preset.fsrs_version,
+                    params=preset.params,
+                    desired_retention=preset.desired_retention,
+                    historical_retention=preset.historical_retention,
+                    fsrs_dynamic_desired_retention_review_limit=preset.fsrs_dynamic_desired_retention_review_limit,
+                    fsrs_dynamic_desired_retention_max_cost_perday_minutes=preset.fsrs_dynamic_desired_retention_max_cost_perday_minutes,
+                ),
+            )
+            self._line_edit(item, COL_ADR_RANGE).setText(_adr_range_text(None))
+            return
+
+        updated = AddonFsrsPresetConfig(
+            id=preset.id,
+            name=preset.name,
+            fsrs_version=preset.fsrs_version,
+            params=result.params,
+            desired_retention=preset.desired_retention,
+            historical_retention=preset.historical_retention,
+            fsrs_dynamic_desired_retention_review_limit=preset.fsrs_dynamic_desired_retention_review_limit,
+            fsrs_dynamic_desired_retention_max_cost_perday_minutes=preset.fsrs_dynamic_desired_retention_max_cost_perday_minutes,
+            fsrs_dynamic_desired_retention_enabled=True,
+            fsrs_dynamic_desired_retention_params=result.fsrs_dynamic_desired_retention_params,
+            fsrs_dynamic_desired_retention_weights=result.fsrs_dynamic_desired_retention_weights,
+            fsrs_dynamic_desired_retention_avg_drs=result.fsrs_dynamic_desired_retention_avg_drs,
+            fsrs_dynamic_desired_retention_fsrs_eq_weights=result.fsrs_dynamic_desired_retention_fsrs_eq_weights,
+            fsrs_dynamic_desired_retention_fsrs_eq_drs=result.fsrs_dynamic_desired_retention_fsrs_eq_drs,
+            fsrs_dynamic_desired_retention_min=result.fsrs_dynamic_desired_retention_min,
+            fsrs_dynamic_desired_retention_max=result.fsrs_dynamic_desired_retention_max,
+        )
+        self._set_adr_policy_data(item, updated)
+        self._line_edit(item, COL_ADR_RANGE).setText(
+            _adr_range_text(updated.dynamic_desired_retention_range())
+        )
+
     def _same_day_default(self, preset: AddonFsrsPresetConfig) -> bool:
         collection = getattr(self.parent(), "col", None)
         if collection is not None and preset.deck:
@@ -853,10 +1178,21 @@ class FsrsPresetConfigDialog(QDialog):
                 return setting
         return True
 
-    def _update_same_day_checkbox(
-        self, checkbox: QCheckBox, fsrs_version: FsrsPresetVersion
+    def _update_fsrs7_controls(
+        self,
+        same_day_checkbox: QCheckBox,
+        adr_checkbox: QCheckBox,
+        adr_review_limit: QSpinBox,
+        adr_daily_minutes: QDoubleSpinBox,
+        fsrs_version: FsrsPresetVersion,
     ) -> None:
-        checkbox.setEnabled(fsrs_version == "seven")
+        enabled = fsrs_version == "seven"
+        same_day_checkbox.setEnabled(enabled)
+        adr_checkbox.setEnabled(enabled)
+        adr_review_limit.setEnabled(enabled)
+        adr_daily_minutes.setEnabled(enabled)
+        if not enabled:
+            adr_checkbox.setChecked(False)
 
     def _load_deck_names(self, parent: QWidget) -> list[str]:
         collection = getattr(parent, "col", None)
@@ -887,5 +1223,35 @@ def _grade_label(first_grade: int) -> str:
     }[first_grade]
 
 
+def _adr_range_text(value: tuple[float, float] | None) -> str:
+    if value is None:
+        return "Optimize required"
+    low, high = value
+    return f"{low:.1%}-{high:.1%}"
+
+
+def _compute_params_progress_text(progress: Any) -> str:
+    if _is_dynamic_desired_retention_progress(progress):
+        return "Compute ADR values %p%"
+    return "Optimizing %p%"
+
+
+def _compute_params_progress_label(progress: Any) -> str:
+    if _is_dynamic_desired_retention_progress(progress):
+        return "Compute ADR values for"
+    return "Optimizing"
+
+
+def _is_dynamic_desired_retention_progress(progress: Any) -> bool:
+    phase = getattr(progress, "phase", 0)
+    if phase == 1:
+        return True
+    return str(phase).endswith("TRAINING_DYNAMIC_DESIRED_RETENTION")
+
+
 def _table_item(text: str) -> QTableWidgetItem:
     return QTableWidgetItem(text)
+
+
+def _deck_counts_toggle_text(visible: bool) -> str:
+    return DECK_COUNTS_HIDE_TEXT if visible else DECK_COUNTS_SHOW_TEXT

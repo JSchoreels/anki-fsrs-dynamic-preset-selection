@@ -19,4 +19,7 @@ Run:
 The script copies runtime files from the source repo into Anki's installed
 add-on directory at
 `/Users/jschoreels/Library/Application Support/Anki2/addons21/1798968356`.
-It does not remove Anki-owned files such as `meta.json`.
+It preserves Anki-owned files such as `meta.json`. If `meta.json` is missing
+display metadata, the script seeds the add-on name, homepage, and human version
+from `manifest.json` so the local add-on manager does not display only the
+numeric package id.

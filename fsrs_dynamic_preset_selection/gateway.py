@@ -12,6 +12,19 @@ SCHEDULER_PB2_OVERRIDE: Any | None = None
 FSRS7_INCLUDE_SAME_DAY_OPTIMIZE_KEY = "fsrs7IncludeSameDayOptimize"
 
 
+@dataclass(frozen=True)
+class OptimizePresetResult:
+    fsrs_items: int
+    params: tuple[float, ...]
+    fsrs_dynamic_desired_retention_params: tuple[float, ...] = ()
+    fsrs_dynamic_desired_retention_weights: tuple[float, ...] = ()
+    fsrs_dynamic_desired_retention_avg_drs: tuple[float, ...] = ()
+    fsrs_dynamic_desired_retention_fsrs_eq_weights: tuple[float, ...] = ()
+    fsrs_dynamic_desired_retention_fsrs_eq_drs: tuple[float, ...] = ()
+    fsrs_dynamic_desired_retention_min: float = 0.0
+    fsrs_dynamic_desired_retention_max: float = 0.0
+
+
 class AnkiFsrsPresetGateway:
     def __init__(self, collection: Any) -> None:
         self.collection = collection
@@ -32,31 +45,41 @@ class AnkiFsrsPresetGateway:
         )
 
 
-def optimize_preset(collection: Any, preset: AddonFsrsPresetConfig) -> tuple[int, tuple[float, ...]]:
+def optimize_preset(
+    collection: Any,
+    preset: AddonFsrsPresetConfig,
+    ordered_rules: list[dict[str, str]] | None = None,
+) -> OptimizePresetResult:
     response = _compute_fsrs_params(
         collection._backend,
-        _optimization_request_kwargs(collection, preset),
+        _optimization_request_kwargs(collection, preset, ordered_rules),
     )
-    params = _float_tuple_field(response, "params")
-    fsrs_items = _int_field(response, "fsrs_items", "fsrsItems")
+    result = _optimize_result_from_response(response)
     LOGGER.info(
         "optimized FSRS dynamic preset preset_id=%s fsrs_items=%s param_count=%s",
         preset.id,
-        fsrs_items,
-        len(params),
+        result.fsrs_items,
+        len(result.params),
     )
-    return fsrs_items, params
+    return result
 
 
 def optimize_presets_batch(
-    collection: Any, presets: list[AddonFsrsPresetConfig]
-) -> list[tuple[int, tuple[float, ...]]]:
+    collection: Any,
+    presets: list[AddonFsrsPresetConfig],
+    ordered_rules: list[dict[str, str]] | None = None,
+) -> list[OptimizePresetResult]:
     if not presets:
         return []
 
     items = []
     for preset in presets:
-        item = _optimization_request_kwargs(collection, preset, include_health_check=False)
+        item = _optimization_request_kwargs(
+            collection,
+            preset,
+            ordered_rules,
+            include_health_check=False,
+        )
         item["id"] = preset.id
         item["name"] = preset.name
         items.append(item)
@@ -72,34 +95,80 @@ def optimize_presets_batch(
         item = results_by_id.get(preset.id)
         if item is None:
             raise RuntimeError(f"optimizer response missing preset: {preset.name}")
-        params = _float_tuple_field(item, "params")
-        fsrs_items = _int_field(item, "fsrs_items", "fsrsItems")
-        results.append((fsrs_items, params))
+        results.append(_optimize_result_from_response(item))
 
     LOGGER.info("optimized FSRS dynamic presets count=%s", len(results))
     return results
 
 
 def _optimization_request_kwargs(
-    collection: Any, preset: AddonFsrsPresetConfig, include_health_check: bool = True
+    collection: Any,
+    preset: AddonFsrsPresetConfig,
+    ordered_rules: list[dict[str, str]] | None = None,
+    include_health_check: bool = True,
 ) -> dict[str, Any]:
-    rule = preset.to_rule_dict()
-    if rule is None:
-        raise ValueError("preset has no deck or search filter")
+    search = _effective_optimization_search(preset, ordered_rules)
     deck_settings = _optimization_deck_settings(collection, preset)
     include_same_day_reviews = _include_same_day_reviews(preset, deck_settings)
     kwargs: dict[str, Any] = {
-        "search": rule["search"],
+        "search": search,
         "ignore_revlogs_before_ms": 0,
         "current_params": preset.params,
         "num_of_relearning_steps": deck_settings.num_of_relearning_steps,
         "fsrs_version": _version_number(preset.fsrs_version),
+        "dynamic_desired_retention_enabled": (
+            preset.fsrs_version == "seven"
+            and preset.fsrs_dynamic_desired_retention_enabled
+        ),
     }
+    if preset.fsrs_dynamic_desired_retention_enabled:
+        if preset.fsrs_dynamic_desired_retention_review_limit is not None:
+            kwargs["dynamic_desired_retention_review_limit"] = (
+                preset.fsrs_dynamic_desired_retention_review_limit
+            )
+        if preset.fsrs_dynamic_desired_retention_max_cost_perday_minutes is not None:
+            kwargs["dynamic_desired_retention_max_cost_perday_minutes"] = (
+                preset.fsrs_dynamic_desired_retention_max_cost_perday_minutes
+            )
     if include_health_check:
         kwargs["health_check"] = False
     if include_same_day_reviews is not None:
         kwargs["include_same_day_reviews"] = include_same_day_reviews
     return kwargs
+
+
+def _effective_optimization_search(
+    preset: AddonFsrsPresetConfig,
+    ordered_rules: list[dict[str, str]] | None,
+) -> str:
+    if ordered_rules is None:
+        rule = preset.to_rule_dict()
+        if rule is None:
+            raise ValueError("preset has no deck or search filter")
+        return rule["search"]
+
+    previous_searches: list[str] = []
+    assigned_terms: list[str] = []
+    for rule in ordered_rules:
+        search = rule["search"].strip()
+        if not search:
+            continue
+        if rule["preset_id"] == preset.id:
+            assigned_terms.append(_search_excluding_previous(search, previous_searches))
+        previous_searches.append(search)
+
+    if not assigned_terms:
+        raise ValueError("preset has no generated or advanced rule")
+    if len(assigned_terms) == 1:
+        return assigned_terms[0]
+    return " or ".join(f"({term})" for term in assigned_terms)
+
+
+def _search_excluding_previous(search: str, previous_searches: list[str]) -> str:
+    effective_search = f"({search})"
+    for previous in previous_searches:
+        effective_search += f" -({previous})"
+    return effective_search
 
 
 @dataclass(frozen=True)
@@ -259,6 +328,48 @@ def _compute_fsrs_params_batch(backend: Any, kwargs: dict[str, Any]) -> Any:
     return _call_backend(backend, "compute_fsrs_params_batch", kwargs)
 
 
+def _optimize_result_from_response(response: Any) -> OptimizePresetResult:
+    return OptimizePresetResult(
+        fsrs_items=_int_field(response, "fsrs_items", "fsrsItems"),
+        params=_float_tuple_field(response, "params"),
+        fsrs_dynamic_desired_retention_params=_float_tuple_field(
+            response,
+            "fsrs_dynamic_desired_retention_params",
+            "fsrsDynamicDesiredRetentionParams",
+        ),
+        fsrs_dynamic_desired_retention_weights=_float_tuple_field(
+            response,
+            "fsrs_dynamic_desired_retention_weights",
+            "fsrsDynamicDesiredRetentionWeights",
+        ),
+        fsrs_dynamic_desired_retention_avg_drs=_float_tuple_field(
+            response,
+            "fsrs_dynamic_desired_retention_avg_drs",
+            "fsrsDynamicDesiredRetentionAvgDrs",
+        ),
+        fsrs_dynamic_desired_retention_fsrs_eq_weights=_float_tuple_field(
+            response,
+            "fsrs_dynamic_desired_retention_fsrs_eq_weights",
+            "fsrsDynamicDesiredRetentionFsrsEqWeights",
+        ),
+        fsrs_dynamic_desired_retention_fsrs_eq_drs=_float_tuple_field(
+            response,
+            "fsrs_dynamic_desired_retention_fsrs_eq_drs",
+            "fsrsDynamicDesiredRetentionFsrsEqDrs",
+        ),
+        fsrs_dynamic_desired_retention_min=_float_field(
+            response,
+            "fsrs_dynamic_desired_retention_min",
+            "fsrsDynamicDesiredRetentionMin",
+        ),
+        fsrs_dynamic_desired_retention_max=_float_field(
+            response,
+            "fsrs_dynamic_desired_retention_max",
+            "fsrsDynamicDesiredRetentionMax",
+        ),
+    )
+
+
 def _assign_request_fields(request: Any, kwargs: dict[str, Any]) -> None:
     for key, value in kwargs.items():
         if value is None:
@@ -280,13 +391,27 @@ def _scheduler_pb2() -> Any:
     return scheduler_pb2
 
 
-def _float_tuple_field(response: Any, name: str) -> tuple[float, ...]:
-    values = getattr(response, name, None)
-    if values is None and isinstance(response, dict):
-        values = response.get(name)
+def _float_tuple_field(response: Any, *names: str) -> tuple[float, ...]:
+    values = None
+    for name in names:
+        values = getattr(response, name, None)
+        if values is None and isinstance(response, dict):
+            values = response.get(name)
+        if values is not None:
+            break
     if values is None:
         return ()
     return tuple(float(value) for value in values)
+
+
+def _float_field(response: Any, *names: str) -> float:
+    for name in names:
+        value = getattr(response, name, None)
+        if value is None and isinstance(response, dict):
+            value = response.get(name)
+        if value is not None:
+            return float(value)
+    return 0.0
 
 
 def _repeated_field(response: Any, name: str) -> Any:

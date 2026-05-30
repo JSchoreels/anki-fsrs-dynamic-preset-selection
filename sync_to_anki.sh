@@ -16,4 +16,25 @@ rsync -a \
   "$ROOT/README.md" \
   "$ADDON_DIR/"
 
+python3 - "$ADDON_DIR/meta.json" "$ROOT/manifest.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+meta_path = Path(sys.argv[1])
+manifest_path = Path(sys.argv[2])
+
+meta = {}
+if meta_path.exists():
+    meta = json.loads(meta_path.read_text(encoding="utf8"))
+
+manifest = json.loads(manifest_path.read_text(encoding="utf8"))
+
+for key in ("name", "homepage", "human_version"):
+    if not meta.get(key) and manifest.get(key):
+        meta[key] = manifest[key]
+
+meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf8")
+PY
+
 echo "Synced FSRS Dynamic Preset Selection to $ADDON_DIR"
