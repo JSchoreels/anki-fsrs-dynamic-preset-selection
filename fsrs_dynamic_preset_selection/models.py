@@ -30,6 +30,7 @@ class AddonFsrsPresetConfig:
     fsrs_dynamic_desired_retention_fsrs_eq_drs: tuple[float, ...] = ()
     fsrs_dynamic_desired_retention_min: float = 0.0
     fsrs_dynamic_desired_retention_max: float = 0.0
+    fsrs_dynamic_desired_retention_clamp: bool = False
 
     def to_overlay_dict(self) -> dict[str, object]:
         overlay = {
@@ -65,6 +66,7 @@ class AddonFsrsPresetConfig:
                     ),
                     "fsrs_dynamic_desired_retention_min": self.fsrs_dynamic_desired_retention_min,
                     "fsrs_dynamic_desired_retention_max": self.fsrs_dynamic_desired_retention_max,
+                    "fsrs_dynamic_desired_retention_clamp": self.fsrs_dynamic_desired_retention_clamp,
                 }
             )
         return overlay
@@ -92,6 +94,14 @@ class AddonFsrsPresetConfig:
         return (
             min(self.fsrs_dynamic_desired_retention_avg_drs),
             max(self.fsrs_dynamic_desired_retention_avg_drs),
+        )
+
+    def fsrs_equivalent_desired_retention_range(self) -> tuple[float, float] | None:
+        if not self.fsrs_dynamic_desired_retention_fsrs_eq_drs:
+            return None
+        return (
+            min(self.fsrs_dynamic_desired_retention_fsrs_eq_drs),
+            max(self.fsrs_dynamic_desired_retention_fsrs_eq_drs),
         )
 
     def to_rule_dict(self) -> dict[str, str] | None:

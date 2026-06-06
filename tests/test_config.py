@@ -70,6 +70,7 @@ def test_load_config_converts_dynamic_dr_policy_to_overlay_dict():
                     "desired_retention": 0.9,
                     "historical_retention": 0.8,
                     "fsrs_dynamic_desired_retention_enabled": True,
+                    "fsrs_dynamic_desired_retention_clamp": True,
                     "fsrs_dynamic_desired_retention_review_limit": 123,
                     "fsrs_dynamic_desired_retention_max_cost_perday_minutes": 45.0,
                     "fsrs_dynamic_desired_retention_params": [0.0] * 15,
@@ -87,6 +88,7 @@ def test_load_config_converts_dynamic_dr_policy_to_overlay_dict():
 
     preset = config.to_overlay_dict()["presets"][0]
     assert preset["fsrs_dynamic_desired_retention_enabled"] is True
+    assert preset["fsrs_dynamic_desired_retention_clamp"] is True
     assert preset["fsrs_dynamic_desired_retention_params"] == [0.0] * 15
     assert preset["fsrs_dynamic_desired_retention_weights"] == [0.0, 15.0]
     assert preset["fsrs_dynamic_desired_retention_avg_drs"] == [0.9, 0.8]
@@ -96,6 +98,7 @@ def test_load_config_converts_dynamic_dr_policy_to_overlay_dict():
     assert preset["fsrs_dynamic_desired_retention_max"] == 0.995
     assert "fsrs_dynamic_desired_retention_review_limit" not in preset
     assert "fsrs_dynamic_desired_retention_max_cost_perday_minutes" not in preset
+    assert config.presets[0].fsrs_dynamic_desired_retention_clamp is True
     assert config.presets[0].fsrs_dynamic_desired_retention_review_limit == 123
     assert (
         config.presets[0].fsrs_dynamic_desired_retention_max_cost_perday_minutes

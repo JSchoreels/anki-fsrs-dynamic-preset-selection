@@ -51,14 +51,16 @@ COL_GRADE = 4
 COL_VERSION = 5
 COL_SAME_DAY = 6
 COL_ADR = 7
-COL_ADR_REVIEW_LIMIT = 8
-COL_ADR_DAILY_MINUTES = 9
-COL_ADR_RANGE = 10
-COL_DESIRED_RETENTION = 11
-COL_HISTORICAL_RETENTION = 12
-COL_PARAMS = 13
-COL_SELECTED_COUNT = 14
-COL_OPTIMIZE = 15
+COL_ADR_CLAMP = 8
+COL_ADR_REVIEW_LIMIT = 9
+COL_ADR_DAILY_MINUTES = 10
+COL_ADR_RANGE = 11
+COL_FSRS_EQ_DR_RANGE = 12
+COL_DESIRED_RETENTION = 13
+COL_HISTORICAL_RETENTION = 14
+COL_PARAMS = 15
+COL_SELECTED_COUNT = 16
+COL_OPTIMIZE = 17
 
 DEFAULT_ADR_REVIEW_LIMIT = 9999
 DEFAULT_ADR_DAILY_MINUTES = 720.0
@@ -109,7 +111,7 @@ class FsrsPresetConfigDialog(QDialog):
         layout.addWidget(QLabel("Add-on FSRS presets"))
 
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(16)
+        self.tree.setColumnCount(18)
         self.tree.setHeaderLabels(
             [
                 "Name",
@@ -120,9 +122,11 @@ class FsrsPresetConfigDialog(QDialog):
                 "FSRS Version",
                 "Same-day Reviews",
                 "ADR",
+                "ADR Clamp",
                 "ADR Reviews",
                 "ADR Minutes",
                 "ADR Range",
+                "FSRS Eq DR Range",
                 "Desired R",
                 "Historical R",
                 "Params",
@@ -139,6 +143,9 @@ class FsrsPresetConfigDialog(QDialog):
             COL_ADR, QHeaderView.ResizeMode.ResizeToContents
         )
         self.tree.header().setSectionResizeMode(
+            COL_ADR_CLAMP, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tree.header().setSectionResizeMode(
             COL_ADR_REVIEW_LIMIT, QHeaderView.ResizeMode.ResizeToContents
         )
         self.tree.header().setSectionResizeMode(
@@ -146,6 +153,9 @@ class FsrsPresetConfigDialog(QDialog):
         )
         self.tree.header().setSectionResizeMode(
             COL_ADR_RANGE, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tree.header().setSectionResizeMode(
+            COL_FSRS_EQ_DR_RANGE, QHeaderView.ResizeMode.ResizeToContents
         )
         self.tree.header().setSectionResizeMode(COL_PARAMS, QHeaderView.ResizeMode.Stretch)
         self.tree.headerItem().setToolTip(
@@ -155,6 +165,10 @@ class FsrsPresetConfigDialog(QDialog):
         self.tree.headerItem().setToolTip(
             COL_ADR,
             "Train and use native Anki Dynamic DR for this FSRS-7 preset.",
+        )
+        self.tree.headerItem().setToolTip(
+            COL_ADR_CLAMP,
+            "Clamp unsupported Dynamic DR targets to the nearest calibrated target.",
         )
         self.tree.headerItem().setToolTip(
             COL_ADR_REVIEW_LIMIT,
@@ -167,6 +181,10 @@ class FsrsPresetConfigDialog(QDialog):
         self.tree.headerItem().setToolTip(
             COL_ADR_RANGE,
             "Calibrated target average DR range available after optimization.",
+        )
+        self.tree.headerItem().setToolTip(
+            COL_FSRS_EQ_DR_RANGE,
+            "FSRS-equivalent Dynamic DR target range available after optimization.",
         )
         layout.addWidget(self.tree)
 
@@ -345,6 +363,7 @@ class FsrsPresetConfigDialog(QDialog):
             first_grade=grade,
             include_same_day_reviews=template.include_same_day_reviews,
             fsrs_dynamic_desired_retention_enabled=template.fsrs_dynamic_desired_retention_enabled,
+            fsrs_dynamic_desired_retention_clamp=template.fsrs_dynamic_desired_retention_clamp,
             fsrs_dynamic_desired_retention_review_limit=template.fsrs_dynamic_desired_retention_review_limit,
             fsrs_dynamic_desired_retention_max_cost_perday_minutes=template.fsrs_dynamic_desired_retention_max_cost_perday_minutes,
             fsrs_dynamic_desired_retention_params=template.fsrs_dynamic_desired_retention_params,
@@ -370,13 +389,15 @@ class FsrsPresetConfigDialog(QDialog):
         version_combo = self._version_combo(preset.fsrs_version)
         same_day_checkbox = self._same_day_checkbox(preset)
         adr_checkbox = self._adr_checkbox(preset)
+        adr_clamp_checkbox = self._adr_clamp_checkbox(preset)
         adr_review_limit = self._adr_review_limit_spin(preset)
         adr_daily_minutes = self._adr_daily_minutes_spin(preset)
         qconnect(
             version_combo.currentIndexChanged,
-            lambda _index, same_day=same_day_checkbox, adr=adr_checkbox, review_limit=adr_review_limit, daily_minutes=adr_daily_minutes, combo=version_combo: self._update_fsrs7_controls(
+            lambda _index, same_day=same_day_checkbox, adr=adr_checkbox, clamp=adr_clamp_checkbox, review_limit=adr_review_limit, daily_minutes=adr_daily_minutes, combo=version_combo: self._update_fsrs7_controls(
                 same_day,
                 adr,
+                clamp,
                 review_limit,
                 daily_minutes,
                 combo.currentData(),
@@ -385,13 +406,18 @@ class FsrsPresetConfigDialog(QDialog):
         self.tree.setItemWidget(item, COL_VERSION, version_combo)
         self.tree.setItemWidget(item, COL_SAME_DAY, same_day_checkbox)
         self.tree.setItemWidget(item, COL_ADR, adr_checkbox)
+        self.tree.setItemWidget(item, COL_ADR_CLAMP, adr_clamp_checkbox)
         self.tree.setItemWidget(item, COL_ADR_REVIEW_LIMIT, adr_review_limit)
         self.tree.setItemWidget(item, COL_ADR_DAILY_MINUTES, adr_daily_minutes)
         self.tree.setItemWidget(item, COL_ADR_RANGE, self._adr_range_widget(preset))
+        self.tree.setItemWidget(
+            item, COL_FSRS_EQ_DR_RANGE, self._fsrs_eq_dr_range_widget(preset)
+        )
         self._set_adr_policy_data(item, preset)
         self._update_fsrs7_controls(
             same_day_checkbox,
             adr_checkbox,
+            adr_clamp_checkbox,
             adr_review_limit,
             adr_daily_minutes,
             preset.fsrs_version,
@@ -490,9 +516,11 @@ class FsrsPresetConfigDialog(QDialog):
             COL_VERSION,
             COL_SAME_DAY,
             COL_ADR,
+            COL_ADR_CLAMP,
             COL_ADR_REVIEW_LIMIT,
             COL_ADR_DAILY_MINUTES,
             COL_ADR_RANGE,
+            COL_FSRS_EQ_DR_RANGE,
             COL_DESIRED_RETENTION,
             COL_HISTORICAL_RETENTION,
             COL_PARAMS,
@@ -638,6 +666,9 @@ class FsrsPresetConfigDialog(QDialog):
             preset["fsrs_dynamic_desired_retention_enabled"] = self._checkbox(
                 item, COL_ADR
             ).isChecked()
+            preset["fsrs_dynamic_desired_retention_clamp"] = self._checkbox(
+                item, COL_ADR_CLAMP
+            ).isChecked()
             preset["fsrs_dynamic_desired_retention_review_limit"] = self._int_spin(
                 item, COL_ADR_REVIEW_LIMIT
             ).value()
@@ -775,10 +806,6 @@ class FsrsPresetConfigDialog(QDialog):
             self._set_item_progress(item, value=100, text="Done")
             self._set_optimize_button(item)
             self._refresh_counts()
-            showInfo(
-                f"Optimized {preset.name} with {result.fsrs_items} FSRS items.",
-                parent=self,
-            )
 
         def on_failure(exc: Exception) -> None:
             self._set_optimize_button(item)
@@ -1044,6 +1071,15 @@ class FsrsPresetConfigDialog(QDialog):
         checkbox.setChecked(preset.fsrs_dynamic_desired_retention_enabled)
         return checkbox
 
+    def _adr_clamp_checkbox(self, preset: AddonFsrsPresetConfig) -> QCheckBox:
+        checkbox = QCheckBox()
+        checkbox.setText("Clamp")
+        checkbox.setToolTip(
+            "Clamp unsupported Dynamic DR targets to the nearest calibrated target."
+        )
+        checkbox.setChecked(preset.fsrs_dynamic_desired_retention_clamp)
+        return checkbox
+
     def _adr_review_limit_spin(self, preset: AddonFsrsPresetConfig) -> QSpinBox:
         spin = QSpinBox()
         spin.setRange(1, 999999)
@@ -1068,6 +1104,13 @@ class FsrsPresetConfigDialog(QDialog):
 
     def _adr_range_widget(self, preset: AddonFsrsPresetConfig) -> QLineEdit:
         widget = QLineEdit(_adr_range_text(preset.dynamic_desired_retention_range()))
+        widget.setReadOnly(True)
+        return widget
+
+    def _fsrs_eq_dr_range_widget(self, preset: AddonFsrsPresetConfig) -> QLineEdit:
+        widget = QLineEdit(
+            _adr_range_text(preset.fsrs_equivalent_desired_retention_range())
+        )
         widget.setReadOnly(True)
         return widget
 
@@ -1142,9 +1185,11 @@ class FsrsPresetConfigDialog(QDialog):
                     historical_retention=preset.historical_retention,
                     fsrs_dynamic_desired_retention_review_limit=preset.fsrs_dynamic_desired_retention_review_limit,
                     fsrs_dynamic_desired_retention_max_cost_perday_minutes=preset.fsrs_dynamic_desired_retention_max_cost_perday_minutes,
+                    fsrs_dynamic_desired_retention_clamp=preset.fsrs_dynamic_desired_retention_clamp,
                 ),
             )
             self._line_edit(item, COL_ADR_RANGE).setText(_adr_range_text(None))
+            self._line_edit(item, COL_FSRS_EQ_DR_RANGE).setText(_adr_range_text(None))
             return
 
         updated = AddonFsrsPresetConfig(
@@ -1157,6 +1202,7 @@ class FsrsPresetConfigDialog(QDialog):
             fsrs_dynamic_desired_retention_review_limit=preset.fsrs_dynamic_desired_retention_review_limit,
             fsrs_dynamic_desired_retention_max_cost_perday_minutes=preset.fsrs_dynamic_desired_retention_max_cost_perday_minutes,
             fsrs_dynamic_desired_retention_enabled=True,
+            fsrs_dynamic_desired_retention_clamp=preset.fsrs_dynamic_desired_retention_clamp,
             fsrs_dynamic_desired_retention_params=result.fsrs_dynamic_desired_retention_params,
             fsrs_dynamic_desired_retention_weights=result.fsrs_dynamic_desired_retention_weights,
             fsrs_dynamic_desired_retention_avg_drs=result.fsrs_dynamic_desired_retention_avg_drs,
@@ -1168,6 +1214,9 @@ class FsrsPresetConfigDialog(QDialog):
         self._set_adr_policy_data(item, updated)
         self._line_edit(item, COL_ADR_RANGE).setText(
             _adr_range_text(updated.dynamic_desired_retention_range())
+        )
+        self._line_edit(item, COL_FSRS_EQ_DR_RANGE).setText(
+            _adr_range_text(updated.fsrs_equivalent_desired_retention_range())
         )
 
     def _same_day_default(self, preset: AddonFsrsPresetConfig) -> bool:
@@ -1182,6 +1231,7 @@ class FsrsPresetConfigDialog(QDialog):
         self,
         same_day_checkbox: QCheckBox,
         adr_checkbox: QCheckBox,
+        adr_clamp_checkbox: QCheckBox,
         adr_review_limit: QSpinBox,
         adr_daily_minutes: QDoubleSpinBox,
         fsrs_version: FsrsPresetVersion,
@@ -1189,10 +1239,12 @@ class FsrsPresetConfigDialog(QDialog):
         enabled = fsrs_version == "seven"
         same_day_checkbox.setEnabled(enabled)
         adr_checkbox.setEnabled(enabled)
+        adr_clamp_checkbox.setEnabled(enabled)
         adr_review_limit.setEnabled(enabled)
         adr_daily_minutes.setEnabled(enabled)
         if not enabled:
             adr_checkbox.setChecked(False)
+            adr_clamp_checkbox.setChecked(False)
 
     def _load_deck_names(self, parent: QWidget) -> list[str]:
         collection = getattr(parent, "col", None)

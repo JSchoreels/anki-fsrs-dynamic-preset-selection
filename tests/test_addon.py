@@ -61,6 +61,33 @@ def _config():
     )
 
 
+def _config_with_dynamic_dr_policy():
+    return load_config(
+        {
+            "presets": [
+                {
+                    "id": "addon:test:first",
+                    "name": "First",
+                    "fsrs_version": "seven",
+                    "params": [1.0] * 35,
+                    "desired_retention": 0.9,
+                    "historical_retention": 0.8,
+                    "deck": "Japanese",
+                    "fsrs_dynamic_desired_retention_enabled": True,
+                    "fsrs_dynamic_desired_retention_params": [0.0] * 15,
+                    "fsrs_dynamic_desired_retention_weights": [0.0, 15.0],
+                    "fsrs_dynamic_desired_retention_avg_drs": [0.9, 0.8],
+                    "fsrs_dynamic_desired_retention_fsrs_eq_weights": [0.0, 15.0],
+                    "fsrs_dynamic_desired_retention_fsrs_eq_drs": [0.91, 0.81],
+                    "fsrs_dynamic_desired_retention_min": 0.3,
+                    "fsrs_dynamic_desired_retention_max": 0.995,
+                },
+            ],
+            "rules": [],
+        }
+    )
+
+
 def test_matched_dynamic_preset_for_card_uses_first_matching_rule() -> None:
     collection = FakeCollection(
         {
@@ -81,6 +108,31 @@ def test_matched_dynamic_preset_for_card_uses_first_matching_rule() -> None:
     assert preset.name == "First"
     assert search == 'deck:"Japanese"'
     assert collection.searched == ['deck:"Japanese" AND cid:123']
+
+
+def test_addon_adds_dynamic_dr_supported_ranges_to_card_info(monkeypatch) -> None:
+    collection = FakeCollection({'deck:"Japanese" AND cid:123'})
+    addon = FsrsDynamicPresetSelectionAddon(
+        module="test",
+        logger=logging.getLogger("test"),
+    )
+    addon._config = _config_with_dynamic_dr_policy()
+    rows = []
+
+    monkeypatch.setattr(
+        addon_module,
+        "mw",
+        SimpleNamespace(col=collection),
+    )
+
+    addon.add_card_info_rows(rows, FakeCard())
+
+    assert [(row.label, row.value) for row in rows] == [
+        ("Dynamic FSRS Preset", "First"),
+        ("Dynamic FSRS Preset Match", 'deck:"Japanese"'),
+        ("Supported ADR Range", "80.00% - 90.00%"),
+        ("FSRS Equivalent DR Supported", "81.00% - 91.00%"),
+    ]
 
 
 def test_addon_adds_dynamic_fsrs_preset_card_info_rows(monkeypatch) -> None:
@@ -146,7 +198,7 @@ def test_addon_adds_dynamic_adr_card_info_row(monkeypatch) -> None:
         ("Dynamic FSRS Preset", "First"),
         ("Dynamic FSRS Preset Match", 'deck:"Japanese"'),
         (
-            "Effective Dynamic ADR",
+            "Effective Dynamic DR Scheduling",
             "90.00% -> Again 70.00%, Hard 80.00%, Good 90.00%, Easy 95.00%",
         ),
     ]
@@ -190,7 +242,7 @@ def test_addon_adds_fixed_dr_card_info_row_for_dynamic_dr_without_mapping(
     assert [(row.label, row.value) for row in rows] == [
         ("Dynamic FSRS Preset", "First"),
         ("Dynamic FSRS Preset Match", 'deck:"Japanese"'),
-        ("Effective Dynamic ADR", "90.00% -> fixed DR"),
+        ("Effective Dynamic DR Scheduling", "90.00% -> fixed FSRS DR"),
     ]
 
 
@@ -256,7 +308,7 @@ def test_addon_uses_effective_dynamic_dr_for_dynamic_adr_card_info_row(
         ("Dynamic FSRS Preset", "First"),
         ("Dynamic FSRS Preset Match", 'deck:"Japanese"'),
         (
-            "Effective Dynamic ADR",
+            "Effective Dynamic DR Scheduling",
             "64.00% -> Again 62.00%, Hard 64.00%, Good 66.00%, Easy 68.00%",
         ),
     ]

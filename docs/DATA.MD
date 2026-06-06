@@ -32,11 +32,13 @@ legacy deck config once for backward compatibility.
 
 For FSRS-7 presets, the add-on config may also store native Dynamic DR policy
 data under `fsrs_dynamic_desired_retention_*`. The dialog writes the ADR enabled
-flag from the ADR checkbox and stores the policy/calibration fields returned by
-Anki core optimization. `fsrsPresetOverlay` includes those ADR fields only when
-the preset is enabled and has complete policy data. The dialog displays the
-valid target average DR range from the stored calibration average DRs. Saving is
-blocked when a preset has ADR enabled but has not been optimized yet.
+flag from the ADR checkbox, writes the ADR clamp flag from the ADR Clamp
+checkbox, and stores the policy/calibration fields returned by Anki core
+optimization. `fsrsPresetOverlay` includes those ADR fields only when the preset
+is enabled and has complete policy data. The dialog displays the valid target
+average DR range from the stored calibration average DRs and the FSRS-equivalent
+DR range from the stored FSRS-equivalent calibration DRs. Saving is blocked when
+a preset has ADR enabled but has not been optimized yet.
 The add-on config also stores ADR training simulator overrides:
 `fsrs_dynamic_desired_retention_review_limit` and
 `fsrs_dynamic_desired_retention_max_cost_perday_minutes`. These values are sent
@@ -109,8 +111,11 @@ Dynamic Desired Retention add-on API is available, this add-on first asks it for
 the effective desired retention, using the matched preset's desired retention as
 the current value. This keeps the Card Info ADR mapping aligned with the
 review-time desired-retention override. If Anki exposes native Dynamic DR
-scheduling-state data, the add-on displays an `Effective Dynamic ADR` row with
-the Again, Hard, Good, and Easy ADR mapping. If Anki reports Dynamic DR is
-enabled but returns no mapping, Card Info displays that the effective desired
-retention uses fixed DR. Older Anki builds without these scheduling-state fields
-skip the extra row.
+scheduling-state data, the add-on displays an `Effective Dynamic DR Scheduling`
+row. When native Dynamic DR is active, the row maps the effective desired
+retention to Again, Hard, Good, and Easy ADR values. If Anki reports Dynamic DR
+is enabled but returns no mapping, Card Info displays that the effective desired
+retention uses fixed FSRS DR. Older Anki builds without these scheduling-state
+fields skip the extra row. When the matched preset has Dynamic DR policy data,
+Card Info also displays the supported average ADR range and the supported
+fixed-FSRS-equivalent DR range read from the preset calibration arrays.

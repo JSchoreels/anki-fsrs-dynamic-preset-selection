@@ -64,6 +64,9 @@
           "fsrs_dynamic_desired_retention_enabled": {
             "type": "boolean"
           },
+          "fsrs_dynamic_desired_retention_clamp": {
+            "type": "boolean"
+          },
           "fsrs_dynamic_desired_retention_review_limit": {
             "type": "integer",
             "minimum": 1

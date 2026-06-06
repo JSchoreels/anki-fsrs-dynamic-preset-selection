@@ -20,6 +20,10 @@ Anki's synced `fsrsPresetOverlay` config.
 - `fsrs_dynamic_desired_retention_enabled`: optional FSRS-7 ADR flag edited by
   the ADR checkbox. When enabled, optimization asks Anki core to train native
   Dynamic DR policy data for the preset.
+- `fsrs_dynamic_desired_retention_clamp`: optional FSRS-7 ADR scheduling flag
+  edited by the ADR Clamp checkbox. When enabled, requested Dynamic DR targets
+  outside the supported calibration range are clamped to the nearest supported
+  target instead of using fixed FSRS DR.
 - `fsrs_dynamic_desired_retention_review_limit`: optional positive integer
   review limit used by the ADR training simulator. Defaults to `9999`.
 - `fsrs_dynamic_desired_retention_max_cost_perday_minutes`: optional positive

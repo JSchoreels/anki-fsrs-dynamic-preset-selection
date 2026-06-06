@@ -60,6 +60,11 @@ def _load_preset(raw_preset: Any, index: int) -> AddonFsrsPresetConfig:
         "fsrs_dynamic_desired_retention_enabled",
         f"presets[{index}]",
     ) or False
+    adr_clamp = _optional_bool(
+        raw_preset,
+        "fsrs_dynamic_desired_retention_clamp",
+        f"presets[{index}]",
+    ) or False
     adr_params = tuple(
         _optional_float_list(
             raw_preset,
@@ -158,6 +163,7 @@ def _load_preset(raw_preset: Any, index: int) -> AddonFsrsPresetConfig:
         fsrs_dynamic_desired_retention_fsrs_eq_drs=adr_fsrs_eq_drs,
         fsrs_dynamic_desired_retention_min=adr_min or 0.0,
         fsrs_dynamic_desired_retention_max=adr_max or 0.0,
+        fsrs_dynamic_desired_retention_clamp=adr_clamp,
     )
 
 

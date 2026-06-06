@@ -75,6 +75,21 @@ class FsrsDynamicPresetSelectionAddon:
 
         rows.append(_card_info_row(label="Dynamic FSRS Preset", value=preset.name))
         rows.append(_card_info_row(label="Dynamic FSRS Preset Match", value=search))
+        if preset.has_dynamic_desired_retention_policy():
+            rows.append(
+                _card_info_row(
+                    label="Supported ADR Range",
+                    value=_retention_range_text(preset.dynamic_desired_retention_range()),
+                )
+            )
+            rows.append(
+                _card_info_row(
+                    label="FSRS Equivalent DR Supported",
+                    value=_retention_range_text(
+                        preset.fsrs_equivalent_desired_retention_range()
+                    ),
+                )
+            )
         adr_mapping = _card_info_adr_mapping_value(
             collection=mw.col,
             card=card,
@@ -87,7 +102,12 @@ class FsrsDynamicPresetSelectionAddon:
             logger=self._logger,
         )
         if adr_mapping is not None:
-            rows.append(_card_info_row(label="Effective Dynamic ADR", value=adr_mapping))
+            rows.append(
+                _card_info_row(
+                    label="Effective Dynamic DR Scheduling",
+                    value=adr_mapping,
+                )
+            )
 
     def _add_tools_menu_entry(self) -> None:
         if self._config_action is not None or mw is None:
@@ -199,7 +219,7 @@ def _card_info_adr_mapping_value(
         return f"{requested} -> {', '.join(grade_parts)}"
 
     if bool(getattr(states, "dynamic_desired_retention_enabled", False)):
-        return f"{requested} -> fixed DR"
+        return f"{requested} -> fixed FSRS DR"
 
     return None
 
@@ -237,6 +257,12 @@ def _card_info_desired_retention(
 
 def _format_retention_percent(value: float) -> str:
     return f"{value * 100:.2f}%"
+
+
+def _retention_range_text(value: tuple[float, float] | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{_format_retention_percent(value[0])} - {_format_retention_percent(value[1])}"
 
 
 def matched_dynamic_preset_for_card(
