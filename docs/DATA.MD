@@ -58,14 +58,22 @@ once and excludes those card ids from the unselected count. These count reads
 do not write collection data.
 
 Optimizing one preset reads that draft preset's `include_same_day_reviews`
-value and updates `params` in the dialog's draft add-on config only. Single
-optimize and Optimize All both build the draft ordered rule list first, then
-send an effective search for each preset: every rule that assigns that preset,
-with all earlier rules subtracted, matching Anki core's first-match scheduling
-semantics. Optimize All sends one batch optimizer request to Anki core with
-each draft preset's effective search, current params, FSRS version, relearning
-step count, same-day review training flag, ADR enabled flag, and ADR simulator
-limit overrides. Anki core
+value and updates `params` in the dialog's draft add-on config only. If another
+single-preset Optimize button is clicked while one is already running, the row
+is marked pending and queued. Queued single-preset optimizations run one at a
+time as background Anki collection operations. A row-local timer reads backend
+progress updates without opening Anki's global progress popup, then drives the
+row progress bar with FSRS optimization percentage and ADR training stage text.
+Completed optimizations update their row's draft params and ADR policy data on
+the UI thread. Optimization completion does not refresh card counts, because
+optimization changes parameters and ADR policy data, not preset searches or rule
+membership. Single optimize and Optimize All
+both build the draft ordered rule list first, then send an effective search for
+each preset: every rule that assigns that preset, with all earlier rules
+subtracted, matching Anki core's first-match scheduling semantics. Optimize All
+sends one batch optimizer request to Anki core with each draft preset's
+effective search, current params, FSRS version, relearning step count, same-day
+review training flag, ADR enabled flag, and ADR simulator limit overrides. Anki core
 reads review logs for those searches and returns optimized params per preset.
 When ADR is enabled, Anki core also returns ADR policy params, calibration
 weights, calibration average DRs, FSRS-equivalent DR calibration pairs, and

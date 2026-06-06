@@ -16,6 +16,7 @@ from aqt.qt import (
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QTimer,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -88,6 +89,15 @@ FSRS_VERSIONS: tuple[tuple[str, FsrsPresetVersion], ...] = (
 FIRST_GRADES = (1, 2, 3, 4)
 
 
+class _RowProgressUpdate:
+    def __init__(self) -> None:
+        self.user_wants_abort = False
+        self.abort = False
+        self.max = 0
+        self.value = 0
+        self.label = ""
+
+
 class FsrsPresetConfigDialog(QDialog):
     def __init__(self, parent: QWidget, *, addon_manager: Any, module: str) -> None:
         super().__init__(parent, Qt.WindowType.Window)
@@ -97,6 +107,9 @@ class FsrsPresetConfigDialog(QDialog):
         self._config = load_config(self._raw_config)
         self._advanced_rules = list(self._raw_config.get("rules", []))
         self._deck_names = self._load_deck_names(parent)
+        self._single_optimize_running = False
+        self._single_optimize_queue: list[QTreeWidgetItem] = []
+        self._single_optimize_progress_timer: QTimer | None = None
 
         self.setWindowTitle("FSRS Dynamic Preset Selection")
         self.resize(1280, 640)
@@ -789,33 +802,103 @@ class FsrsPresetConfigDialog(QDialog):
         item = self._item_for_widget(button, COL_OPTIMIZE)
         if item is None:
             return
+        FsrsPresetConfigDialog._queue_or_start_optimize_item(self, item)
+
+    def _queue_or_start_optimize_item(self, item: QTreeWidgetItem) -> None:
+        if getattr(self, "_single_optimize_running", False):
+            queue = getattr(self, "_single_optimize_queue", [])
+            self._single_optimize_queue = queue
+            if item not in queue:
+                queue.append(item)
+                self._set_item_progress(item, value=0, text="Pending")
+            return
+
+        FsrsPresetConfigDialog._start_optimize_item(self, item)
+
+    def _start_optimize_item(self, item: QTreeWidgetItem) -> None:
+        self._single_optimize_running = True
         try:
             preset, ordered_rules = self._optimization_context(item)
         except (ConfigError, ValueError) as exc:
             showWarning(f"Unable to optimize preset:\n\n{exc}", parent=self)
+            FsrsPresetConfigDialog._finish_optimize_item(self)
             return
         except Exception as exc:
             showWarning(f"Unable to optimize preset:\n\n{exc}", parent=self)
+            FsrsPresetConfigDialog._finish_optimize_item(self)
             return
 
         self._set_item_progress(item, value=0, maximum=0, text="Optimizing...")
+        getattr(self, "_start_item_backend_progress", lambda _item, _name: None)(
+            item, preset.name
+        )
 
         def on_success(result: Any) -> None:
+            getattr(self, "_stop_item_backend_progress", lambda: None)()
             self._line_edit(item, COL_PARAMS).setText(_format_params(result.params))
             self._apply_optimized_adr(item, preset, result)
             self._set_item_progress(item, value=100, text="Done")
             self._set_optimize_button(item)
-            self._refresh_counts()
+            FsrsPresetConfigDialog._finish_optimize_item(self)
 
         def on_failure(exc: Exception) -> None:
+            getattr(self, "_stop_item_backend_progress", lambda: None)()
             self._set_optimize_button(item)
             showWarning(f"Unable to optimize preset:\n\n{exc}", parent=self)
+            FsrsPresetConfigDialog._finish_optimize_item(self)
 
         QueryOp(
             parent=self,
             op=lambda col: optimize_preset(col, preset, ordered_rules),
             success=on_success,
         ).failure(on_failure).run_in_background()
+
+    def _start_item_backend_progress(
+        self, item: QTreeWidgetItem, preset_name: str
+    ) -> None:
+        self._stop_item_backend_progress()
+        timer = QTimer(self)
+        self._single_optimize_progress_timer = timer
+
+        def on_progress() -> None:
+            from aqt import mw
+
+            if mw is None:
+                return
+            update = _RowProgressUpdate()
+            self._update_item_compute_progress(
+                item,
+                mw.backend.latest_progress(),
+                update,
+                preset_name,
+            )
+
+        qconnect(timer.timeout, on_progress)
+        timer.start(100)
+
+    def _stop_item_backend_progress(self) -> None:
+        timer = getattr(self, "_single_optimize_progress_timer", None)
+        if timer is None:
+            return
+        timer.stop()
+        timer.deleteLater()
+        self._single_optimize_progress_timer = None
+
+    def _finish_optimize_item(self) -> None:
+        self._single_optimize_running = False
+        FsrsPresetConfigDialog._start_next_queued_optimize_item(self)
+
+    def _start_next_queued_optimize_item(self) -> None:
+        queue = getattr(self, "_single_optimize_queue", [])
+        self._single_optimize_queue = queue
+        if not queue:
+            return
+        items = list(self._all_items())
+        while queue:
+            item = queue.pop(0)
+            if any(item is existing for existing in items):
+                FsrsPresetConfigDialog._start_optimize_item(self, item)
+                return
 
     def _optimize_all(self) -> None:
         items = self._leaf_items()
@@ -840,7 +923,6 @@ class FsrsPresetConfigDialog(QDialog):
                 self._line_edit(item, COL_PARAMS).setText(_format_params(result.params))
                 self._apply_optimized_adr(item, preset, result)
                 self._set_item_progress(item, value=100, text="Done")
-            self._refresh_counts()
             self._hide_optimize_all_progress()
             self._restore_all_item_optimize_buttons(items)
             showInfo(f"Optimized {len(results)} presets.", parent=self)

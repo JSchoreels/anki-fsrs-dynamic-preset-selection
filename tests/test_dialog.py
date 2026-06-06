@@ -97,12 +97,13 @@ def test_set_deck_counts_visible_updates_table_and_button() -> None:
     assert dialog.deck_counts_toggle_button.text == DECK_COUNTS_SHOW_TEXT
 
 
-def test_single_preset_optimize_uses_row_local_progress(monkeypatch) -> None:
+def test_single_preset_optimize_uses_row_progress_without_popup(monkeypatch) -> None:
     item = object()
     button = object()
     preset = SimpleNamespace(name="Medical")
     progress_calls: list[tuple[object, dict[str, object]]] = []
     started_ops = []
+    row_progress_starts = []
 
     class FakeQueryOp:
         def __init__(self, *, parent, op, success) -> None:
@@ -111,7 +112,7 @@ def test_single_preset_optimize_uses_row_local_progress(monkeypatch) -> None:
             self.success = success
 
         def with_backend_progress(self, _progress_update):
-            raise AssertionError("single preset optimize should not use global progress")
+            raise AssertionError("single preset optimize should not show popup progress")
 
         def failure(self, _failure):
             return self
@@ -132,6 +133,8 @@ def test_single_preset_optimize_uses_row_local_progress(monkeypatch) -> None:
         _set_item_progress=lambda optimized_item, **kwargs: progress_calls.append(
             (optimized_item, kwargs)
         ),
+        _update_item_compute_progress=lambda *args: None,
+        _start_item_backend_progress=lambda *args: row_progress_starts.append(args),
     )
 
     FsrsPresetConfigDialog._optimize_item(dialog, button)
@@ -139,6 +142,7 @@ def test_single_preset_optimize_uses_row_local_progress(monkeypatch) -> None:
     assert progress_calls == [
         (item, {"value": 0, "maximum": 0, "text": "Optimizing..."})
     ]
+    assert row_progress_starts == [(item, "Medical")]
     assert len(started_ops) == 1
 
 
@@ -148,6 +152,7 @@ def test_single_preset_optimize_success_does_not_show_popup(monkeypatch) -> None
     preset = SimpleNamespace(name="Medical")
     started_ops = []
     popup_messages: list[str] = []
+    refresh_count_calls = []
 
     class FakeLineEdit:
         def __init__(self) -> None:
@@ -159,6 +164,9 @@ def test_single_preset_optimize_success_does_not_show_popup(monkeypatch) -> None
     class FakeQueryOp:
         def __init__(self, *, parent, op, success) -> None:
             self.success = success
+
+        def with_backend_progress(self, _progress_update):
+            return self
 
         def failure(self, _failure):
             return self
@@ -183,7 +191,7 @@ def test_single_preset_optimize_success_does_not_show_popup(monkeypatch) -> None
         _line_edit=lambda optimized_item, column: line_edit,
         _apply_optimized_adr=lambda optimized_item, optimized_preset, result: None,
         _set_optimize_button=lambda optimized_item: None,
-        _refresh_counts=lambda: None,
+        _refresh_counts=lambda: refresh_count_calls.append(None),
     )
 
     FsrsPresetConfigDialog._optimize_item(dialog, button)
@@ -191,3 +199,71 @@ def test_single_preset_optimize_success_does_not_show_popup(monkeypatch) -> None
 
     assert line_edit.text == "0.1, 0.2"
     assert popup_messages == []
+    assert refresh_count_calls == []
+
+
+def test_single_preset_optimize_queues_clicks_while_running(monkeypatch) -> None:
+    class FakeTreeItem:
+        __hash__ = None
+
+    first_item = FakeTreeItem()
+    second_item = FakeTreeItem()
+    first_button = object()
+    second_button = object()
+    progress_calls: list[tuple[object, dict[str, object]]] = []
+    started_ops = []
+
+    class FakeLineEdit:
+        def setText(self, _text: str) -> None:
+            pass
+
+    class FakeQueryOp:
+        def __init__(self, *, parent, op, success) -> None:
+            self.success = success
+
+        def with_backend_progress(self, _progress_update):
+            return self
+
+        def failure(self, _failure):
+            return self
+
+        def run_in_background(self) -> None:
+            started_ops.append(self)
+
+    monkeypatch.setattr(dialog_module, "QueryOp", FakeQueryOp)
+
+    dialog = SimpleNamespace(
+        _single_optimize_running=False,
+        _single_optimize_queue=[],
+        _item_for_widget=lambda widget, column: {
+            (first_button, COL_OPTIMIZE): first_item,
+            (second_button, COL_OPTIMIZE): second_item,
+        }.get((widget, column)),
+        _optimization_context=lambda item: (
+            SimpleNamespace(name="Queued"),
+            [{"search": "tag:queued", "preset_id": "addon:test:queued"}],
+        ),
+        _set_item_progress=lambda item, **kwargs: progress_calls.append((item, kwargs)),
+        _line_edit=lambda item, column: FakeLineEdit(),
+        _apply_optimized_adr=lambda item, preset, result: None,
+        _set_optimize_button=lambda item: None,
+        _refresh_counts=lambda: None,
+        _all_items=lambda: [first_item, second_item],
+    )
+
+    FsrsPresetConfigDialog._optimize_item(dialog, first_button)
+    FsrsPresetConfigDialog._optimize_item(dialog, second_button)
+
+    assert len(started_ops) == 1
+    assert progress_calls == [
+        (first_item, {"value": 0, "maximum": 0, "text": "Optimizing..."}),
+        (second_item, {"value": 0, "text": "Pending"}),
+    ]
+
+    started_ops[0].success(SimpleNamespace(params=(0.1, 0.2)))
+
+    assert len(started_ops) == 2
+    assert progress_calls[-2:] == [
+        (first_item, {"value": 100, "text": "Done"}),
+        (second_item, {"value": 0, "maximum": 0, "text": "Optimizing..."}),
+    ]
