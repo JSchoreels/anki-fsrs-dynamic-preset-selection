@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 from fsrs_dynamic_preset_selection.config import load_config
 from fsrs_dynamic_preset_selection.gateway import (
@@ -12,6 +12,7 @@ from fsrs_dynamic_preset_selection.gateway import (
     optimize_preset,
     optimize_presets_batch,
     OptimizePresetResult,
+    rewrite_memory_states_for_presets,
 )
 import fsrs_dynamic_preset_selection.gateway as gateway
 from fsrs_dynamic_preset_selection.models import AddonFsrsPresetConfig
@@ -149,6 +150,68 @@ class FakeCollectionWithSameDayOnBackend:
         self._backend = FakeBackend()
 
 
+class FakeMemoryState:
+    def __init__(self) -> None:
+        self.stability: float | None = None
+        self.difficulty: float | None = None
+        self.stability_internal: float | None = None
+
+
+class FakeMemoryCard:
+    def __init__(self, card_id: int) -> None:
+        self.id = card_id
+        self.memory_state: object | None = object()
+        self.desired_retention: float | None = None
+        self.decay: float | None = None
+
+
+class FakeMemoryStateCollection:
+    def __init__(self, cards_by_search: dict[str, list[int]]) -> None:
+        self.cards_by_search = cards_by_search
+        self.searched: list[str] = []
+        self.cards: dict[int, FakeMemoryCard] = {}
+        self.updated_cards: list[FakeMemoryCard] = []
+        self.update_batches: list[list[int]] = []
+        self.update_skip_undo_entry: bool | None = None
+
+    def build_search_string(self, *nodes: str, joiner: str = "AND") -> str:
+        return f" {joiner} ".join(nodes)
+
+    def find_cards(self, search: str, order: bool = False) -> list[int]:
+        assert order is False
+        self.searched.append(search)
+        return self.cards_by_search.get(search, [])
+
+    def compute_memory_state(self, card_id: int) -> object:
+        if card_id == 2:
+            return SimpleNamespace(
+                stability=None,
+                stability_internal=None,
+                difficulty=None,
+                desired_retention=0.86,
+                decay=0.1542,
+            )
+        return SimpleNamespace(
+            stability=12.5,
+            stability_internal=10.0,
+            difficulty=4.5,
+            desired_retention=0.9,
+            decay=0.1542,
+        )
+
+    def get_card(self, card_id: int) -> FakeMemoryCard:
+        self.cards.setdefault(card_id, FakeMemoryCard(card_id))
+        return self.cards[card_id]
+
+    def update_cards(
+        self, cards: list[FakeMemoryCard], skip_undo_entry: bool = False
+    ) -> object:
+        self.update_batches.append([card.id for card in cards])
+        self.updated_cards.extend(cards)
+        self.update_skip_undo_entry = skip_undo_entry
+        return SimpleNamespace(card=True)
+
+
 def test_optimize_preset_uses_generated_search_and_version():
     collection = FakeCollectionWithBackend()
     preset = AddonFsrsPresetConfig(
@@ -177,6 +240,87 @@ def test_optimize_preset_uses_generated_search_and_version():
         "fsrs_version": 7,
         "dynamic_desired_retention_enabled": False,
     }
+
+
+def test_rewrite_memory_states_for_presets_uses_effective_membership_and_batches(
+    monkeypatch,
+):
+    anki_module = ModuleType("anki")
+    cards_module = ModuleType("anki.cards")
+    cards_module.FSRSMemoryState = FakeMemoryState
+    anki_module.cards = cards_module
+    monkeypatch.setitem(sys.modules, "anki", anki_module)
+    monkeypatch.setitem(sys.modules, "anki.cards", cards_module)
+    monkeypatch.setattr(gateway, "MEMORY_STATE_UPDATE_BATCH_SIZE", 1)
+
+    config = load_config(
+        {
+            "presets": [
+                {
+                    "id": "addon:test:first",
+                    "name": "First",
+                    "fsrs_version": "six",
+                    "params": [2.0] * 21,
+                    "desired_retention": 0.9,
+                    "historical_retention": 0.8,
+                },
+                {
+                    "id": "addon:test:second",
+                    "name": "Second",
+                    "fsrs_version": "six",
+                    "params": [3.0] * 21,
+                    "desired_retention": 0.86,
+                    "historical_retention": 0.8,
+                },
+            ],
+            "rules": [
+                {"search": "tag:first", "preset_id": "addon:test:first"},
+                {"search": "tag:second", "preset_id": "addon:test:second"},
+            ],
+        }
+    )
+    collection = FakeMemoryStateCollection(
+        {
+            "(tag:first) AND -is:new": [1, 2],
+            "(tag:second) -(tag:first) AND -is:new": [3],
+        }
+    )
+    progress = []
+
+    result = rewrite_memory_states_for_presets(
+        collection,
+        list(config.presets),
+        config.to_overlay_dict()["rules"],
+        progress=progress.append,
+    )
+
+    assert result.cards_found == 3
+    assert result.cards_updated == 3
+    assert collection.searched == [
+        "(tag:first) AND -is:new",
+        "(tag:second) -(tag:first) AND -is:new",
+    ]
+    assert collection.update_skip_undo_entry is True
+    assert collection.update_batches == [[1], [2], [3]]
+
+    card = collection.cards[1]
+    assert isinstance(card.memory_state, FakeMemoryState)
+    assert card.memory_state.stability == 12.5
+    assert card.memory_state.stability_internal == 10.0
+    assert card.memory_state.difficulty == 4.5
+    assert card.desired_retention == 0.9
+    assert card.decay == 0.1542
+
+    stale_card = collection.cards[2]
+    assert stale_card.memory_state is None
+    assert stale_card.desired_retention == 0.86
+    assert stale_card.decay == 0.1542
+    assert progress[0].preset_name == "First"
+    assert progress[0].current == 0
+    assert progress[0].total == 2
+    assert progress[-1].preset_name == "Second"
+    assert progress[-1].current == 1
+    assert progress[-1].total == 1
 
 
 def test_optimize_preset_uses_effective_ordered_rule_slice():

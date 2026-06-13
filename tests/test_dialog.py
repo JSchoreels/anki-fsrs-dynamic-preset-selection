@@ -11,8 +11,10 @@ from fsrs_dynamic_preset_selection.dialog import (
     _compute_params_progress_label,
     _compute_params_progress_text,
     _deck_counts_toggle_text,
+    _memory_rewrite_progress_text,
 )
 import fsrs_dynamic_preset_selection.dialog as dialog_module
+from fsrs_dynamic_preset_selection.gateway import MemoryStateRewriteProgress
 from fsrs_dynamic_preset_selection.models import AddonFsrsPresetConfig
 
 
@@ -78,6 +80,19 @@ def test_compute_params_progress_text_names_adr_phase() -> None:
     assert _compute_params_progress_text(progress) == "Compute ADR values %p%"
     assert _compute_params_progress_label(progress) == "Compute ADR values for"
     assert _compute_params_progress_text(SimpleNamespace(phase=0)) == "Optimizing %p%"
+
+
+def test_memory_rewrite_progress_text_shows_card_counts() -> None:
+    progress = MemoryStateRewriteProgress(
+        preset_id="addon:test:medical",
+        preset_name="Medical",
+        preset_index=1,
+        preset_count=2,
+        current=25,
+        total=100,
+    )
+
+    assert _memory_rewrite_progress_text(progress) == "Memory 25/100"
 
 
 def test_set_deck_counts_visible_updates_table_and_button() -> None:
@@ -153,6 +168,7 @@ def test_single_preset_optimize_success_does_not_show_popup(monkeypatch) -> None
     started_ops = []
     popup_messages: list[str] = []
     refresh_count_calls = []
+    memory_rewrite_calls = []
 
     class FakeLineEdit:
         def __init__(self) -> None:
@@ -190,7 +206,9 @@ def test_single_preset_optimize_success_does_not_show_popup(monkeypatch) -> None
         _set_item_progress=lambda optimized_item, **kwargs: None,
         _line_edit=lambda optimized_item, column: line_edit,
         _apply_optimized_adr=lambda optimized_item, optimized_preset, result: None,
-        _set_optimize_button=lambda optimized_item: None,
+        _start_single_memory_state_rewrite=lambda optimized_item: memory_rewrite_calls.append(
+            optimized_item
+        ),
         _refresh_counts=lambda: refresh_count_calls.append(None),
     )
 
@@ -198,6 +216,7 @@ def test_single_preset_optimize_success_does_not_show_popup(monkeypatch) -> None
     started_ops[0].success(SimpleNamespace(params=(0.1, 0.2), fsrs_items=42))
 
     assert line_edit.text == "0.1, 0.2"
+    assert memory_rewrite_calls == [item]
     assert popup_messages == []
     assert refresh_count_calls == []
 
@@ -232,6 +251,10 @@ def test_single_preset_optimize_queues_clicks_while_running(monkeypatch) -> None
 
     monkeypatch.setattr(dialog_module, "QueryOp", FakeQueryOp)
 
+    def start_memory_rewrite(item):
+        progress_calls.append((item, {"value": 100, "text": "Done"}))
+        FsrsPresetConfigDialog._finish_optimize_item(dialog)
+
     dialog = SimpleNamespace(
         _single_optimize_running=False,
         _single_optimize_queue=[],
@@ -246,7 +269,7 @@ def test_single_preset_optimize_queues_clicks_while_running(monkeypatch) -> None
         _set_item_progress=lambda item, **kwargs: progress_calls.append((item, kwargs)),
         _line_edit=lambda item, column: FakeLineEdit(),
         _apply_optimized_adr=lambda item, preset, result: None,
-        _set_optimize_button=lambda item: None,
+        _start_single_memory_state_rewrite=start_memory_rewrite,
         _refresh_counts=lambda: None,
         _all_items=lambda: [first_item, second_item],
     )

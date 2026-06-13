@@ -1,14 +1,17 @@
 # Data
 
-This add-on reads its local add-on config through Anki's add-on manager and
-writes one synced collection config entry:
+This add-on reads its local add-on config through Anki's add-on manager,
+writes one synced collection config entry, and rewrites selected card FSRS data
+after optimization:
 
 - key: `fsrsPresetOverlay`
 - value: object containing `presets` and `rules`
 
-The add-on never writes deck configs or card rows directly. Anki core validates
-the overlay before storing it, including FSRS params, search syntax, forbidden
-FSRS metric properties in rules, and rule references to missing presets.
+The add-on never writes deck configs. Outside the post-optimize memory-state
+rewrite described below, it does not write card rows directly. Anki core
+validates the overlay before storing it, including FSRS params, search syntax,
+forbidden FSRS metric properties in rules, and rule references to missing
+presets.
 
 The add-on config may store preset-level `deck` and `search` values. These
 values are local add-on config only; before writing `fsrsPresetOverlay`, the
@@ -45,6 +48,28 @@ The add-on config also stores ADR training simulator overrides:
 to optimization only; they are not written into `fsrsPresetOverlay` because
 review-time scheduling uses the trained policy/calibration output instead.
 
+After single optimize or Optimize All finishes applying optimized params and
+ADR policy data to the dialog draft, the dialog applies that optimized draft to
+`fsrsPresetOverlay`, then rewrites memory states for the optimized preset or
+presets. This happens as the post-optimize step, not when the dialog is saved
+and not when the raw add-on config is updated. The rewrite adds `-is:new` to
+each optimized preset's effective first-match search, asks Anki core to compute
+each card's memory state with the newly applied overlay, and writes only the
+card FSRS data fields: `memory_state`, `desired_retention`, and `decay`. It
+uses batched `Collection.update_cards(..., skip_undo_entry=True)` calls and
+does not update due dates, intervals, queues, or review-log rows. For native
+Dynamic DR, the memory state is reconstructed from the actual review history by
+Anki core; the stored desired-retention field follows Anki's
+`compute_memory_state()` output until the next review stores the chosen
+answer's Dynamic DR value.
+
+Because Anki computes memory states against the collection's current overlay,
+the post-optimize rewrite writes the optimized draft overlay before the dialog's
+local add-on config is saved. Saving the dialog persists that same draft to the
+local add-on config and applies the overlay again, but it does not rewrite
+memory states. Canceling the dialog does not persist the local add-on config;
+the next collection load or config update reapplies the saved config overlay.
+
 The config dialog derives add-on preset ids from preset names. It stores the
 derived ids in the add-on config and writes them to `fsrsPresetOverlay`, but the
 dialog does not expose ids as editable data.
@@ -58,16 +83,18 @@ once and excludes those card ids from the unselected count. These count reads
 do not write collection data.
 
 Optimizing one preset reads that draft preset's `include_same_day_reviews`
-value and updates `params` in the dialog's draft add-on config only. If another
-single-preset Optimize button is clicked while one is already running, the row
-is marked pending and queued. Queued single-preset optimizations run one at a
-time as background Anki collection operations. A row-local timer reads backend
-progress updates without opening Anki's global progress popup, then drives the
-row progress bar with FSRS optimization percentage and ADR training stage text.
-Completed optimizations update their row's draft params and ADR policy data on
-the UI thread. Optimization completion does not refresh card counts, because
-optimization changes parameters and ADR policy data, not preset searches or rule
-membership. Single optimize and Optimize All
+value. The optimizer result first updates `params` and ADR policy data in the
+dialog draft, then the post-optimize step above applies the optimized draft
+overlay and rewrites matching memory states. If another single-preset Optimize
+button is clicked while one is already running, the row is marked pending and
+queued. Queued single-preset optimizations run one at a time. During the
+optimizer phase, a row-local timer reads backend progress updates without
+opening Anki's global progress popup, then drives the row progress bar with FSRS
+optimization percentage and ADR training stage text. During the post-optimize
+rewrite phase, the row progress bar switches to rewritten-card counts.
+Optimization completion does not refresh card counts, because optimization
+changes parameters and ADR policy data, not preset searches or rule membership.
+Single optimize and Optimize All
 both build the draft ordered rule list first, then send an effective search for
 each preset: every rule that assigns that preset, with all earlier rules
 subtracted, matching Anki core's first-match scheduling semantics. Optimize All
@@ -81,16 +108,17 @@ retention bounds. The average-DR calibration weights returned by Anki core are
 simulation-backed bisection results against average ADR DR targets; the
 FSRS-equivalent calibration maps the table's fixed-FSRS DR to the ADR cost
 weight used by review scheduling and visualization. The add-on stores those
-values only in the dialog draft until the user saves. The updated values are
-written to the local add-on config and then to `fsrsPresetOverlay` only when
-the user saves the dialog.
+values in the dialog draft, immediately applies the optimized draft overlay for
+the post-optimize memory-state rewrite, and writes the values to the local
+add-on config only when the user saves the dialog.
 
 The config dialog's ADR visualizer reads the selected row's draft ADR policy,
 calibration, retention bounds, and desired retention. Moving the DR control in
 the visualizer only changes the temporary plotted cost weight. Pressing
 `Save DR` writes the visualizer's target back to the selected row's
-`desired_retention` spinbox; the add-on config and collection overlay are still
-unchanged until the main config dialog is saved.
+`desired_retention` spinbox; the add-on config is unchanged, and the collection
+overlay is not updated by Save DR until the main config dialog is saved or
+another optimize step applies the draft overlay.
 
 When optimizing a preset, the add-on reads the selected deck's legacy deck
 config dict with `collection.decks.config_dict_for_deck_id()` only when

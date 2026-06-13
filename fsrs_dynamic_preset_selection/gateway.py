@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +10,8 @@ from .models import AddonFsrsPresetConfig, DynamicPresetSelectionConfig, deck_se
 LOGGER = logging.getLogger(__name__)
 SCHEDULER_PB2_OVERRIDE: Any | None = None
 FSRS7_INCLUDE_SAME_DAY_OPTIMIZE_KEY = "fsrs7IncludeSameDayOptimize"
+MEMORY_STATE_UPDATE_BATCH_SIZE = 250
+MEMORY_STATE_PROGRESS_INTERVAL = 25
 
 
 @dataclass(frozen=True)
@@ -25,11 +27,28 @@ class OptimizePresetResult:
     fsrs_dynamic_desired_retention_max: float = 0.0
 
 
+@dataclass(frozen=True)
+class MemoryStateRewriteResult:
+    cards_found: int
+    cards_updated: int
+    changes: Any | None = None
+
+
+@dataclass(frozen=True)
+class MemoryStateRewriteProgress:
+    preset_id: str
+    preset_name: str
+    preset_index: int
+    preset_count: int
+    current: int
+    total: int
+
+
 class AnkiFsrsPresetGateway:
     def __init__(self, collection: Any) -> None:
         self.collection = collection
 
-    def apply(self, config: DynamicPresetSelectionConfig) -> None:
+    def apply(self, config: DynamicPresetSelectionConfig) -> Any:
         setter = getattr(self.collection, "set_fsrs_preset_overlay", None)
         if not callable(setter):
             raise RuntimeError("Anki does not expose set_fsrs_preset_overlay()")
@@ -37,12 +56,13 @@ class AnkiFsrsPresetGateway:
         from anki.collection import FsrsPresetOverlay
 
         overlay = FsrsPresetOverlay.from_dict(config.to_overlay_dict())
-        setter(overlay)
+        changes = setter(overlay)
         LOGGER.info(
             "applied FSRS preset overlay presets=%s rules=%s",
             len(config.presets),
             len(config.rules),
         )
+        return changes
 
 
 def optimize_preset(
@@ -99,6 +119,156 @@ def optimize_presets_batch(
 
     LOGGER.info("optimized FSRS dynamic presets count=%s", len(results))
     return results
+
+
+def rewrite_memory_states_for_presets(
+    collection: Any,
+    presets: list[AddonFsrsPresetConfig],
+    ordered_rules: list[dict[str, str]],
+    progress: Callable[[MemoryStateRewriteProgress], None] | None = None,
+) -> MemoryStateRewriteResult:
+    update_cards = getattr(collection, "update_cards", None)
+    if not callable(update_cards):
+        raise RuntimeError("Anki does not expose update_cards()")
+
+    cards_found = 0
+    cards_updated = 0
+    changes = None
+    preset_count = len(presets)
+    for preset_index, preset in enumerate(presets, start=1):
+        result = _rewrite_memory_states_for_preset(
+            collection,
+            preset,
+            ordered_rules,
+            preset_index,
+            preset_count,
+            update_cards,
+            progress,
+        )
+        cards_found += result.cards_found
+        cards_updated += result.cards_updated
+        if result.changes is not None:
+            changes = result.changes
+
+    LOGGER.info(
+        "rewrote FSRS memory state presets=%s cards_found=%s cards_updated=%s",
+        preset_count,
+        cards_found,
+        cards_updated,
+    )
+    return MemoryStateRewriteResult(
+        cards_found=cards_found,
+        cards_updated=cards_updated,
+        changes=changes,
+    )
+
+
+def _rewrite_memory_states_for_preset(
+    collection: Any,
+    preset: AddonFsrsPresetConfig,
+    ordered_rules: list[dict[str, str]],
+    preset_index: int,
+    preset_count: int,
+    update_cards: Callable[..., Any],
+    progress: Callable[[MemoryStateRewriteProgress], None] | None,
+) -> MemoryStateRewriteResult:
+    search = _effective_optimization_search(preset, ordered_rules)
+    non_new_search = collection.build_search_string(search, "-is:new")
+    card_ids = sorted(
+        {int(card_id) for card_id in collection.find_cards(non_new_search, order=False)}
+    )
+    total = len(card_ids)
+    _report_memory_state_progress(
+        progress,
+        preset,
+        preset_index,
+        preset_count,
+        current=0,
+        total=total,
+    )
+    if not card_ids:
+        return MemoryStateRewriteResult(cards_found=0, cards_updated=0)
+
+    changes = None
+    cards_to_update = []
+    cards_updated = 0
+    for card_id in card_ids:
+        computed = collection.compute_memory_state(card_id)
+        card = collection.get_card(card_id)
+        card.memory_state = _memory_state_proto(computed)
+        card.desired_retention = computed.desired_retention
+        card.decay = computed.decay
+        cards_to_update.append(card)
+        cards_updated += 1
+        if len(cards_to_update) >= MEMORY_STATE_UPDATE_BATCH_SIZE:
+            changes = update_cards(cards_to_update, skip_undo_entry=True)
+            cards_to_update = []
+        if (
+            cards_updated == total
+            or cards_updated % MEMORY_STATE_PROGRESS_INTERVAL == 0
+        ):
+            _report_memory_state_progress(
+                progress,
+                preset,
+                preset_index,
+                preset_count,
+                current=cards_updated,
+                total=total,
+            )
+
+    if cards_to_update:
+        changes = update_cards(cards_to_update, skip_undo_entry=True)
+
+    _report_memory_state_progress(
+        progress,
+        preset,
+        preset_index,
+        preset_count,
+        current=cards_updated,
+        total=total,
+    )
+    return MemoryStateRewriteResult(
+        cards_found=total,
+        cards_updated=cards_updated,
+        changes=changes,
+    )
+
+
+def _report_memory_state_progress(
+    progress: Callable[[MemoryStateRewriteProgress], None] | None,
+    preset: AddonFsrsPresetConfig,
+    preset_index: int,
+    preset_count: int,
+    *,
+    current: int,
+    total: int,
+) -> None:
+    if progress is None:
+        return
+    progress(
+        MemoryStateRewriteProgress(
+            preset_id=preset.id,
+            preset_name=preset.name,
+            preset_index=preset_index,
+            preset_count=preset_count,
+            current=current,
+            total=total,
+        )
+    )
+
+
+def _memory_state_proto(computed: Any) -> Any | None:
+    if computed.stability is None or computed.difficulty is None:
+        return None
+
+    from anki.cards import FSRSMemoryState
+
+    memory_state = FSRSMemoryState()
+    memory_state.stability = float(computed.stability)
+    memory_state.difficulty = float(computed.difficulty)
+    if computed.stability_internal is not None:
+        memory_state.stability_internal = float(computed.stability_internal)
+    return memory_state
 
 
 def _optimization_request_kwargs(

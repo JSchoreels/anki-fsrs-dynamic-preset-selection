@@ -27,19 +27,24 @@ from aqt.qt import (
     QWidget,
     qconnect,
 )
-from aqt.operations import QueryOp
+from aqt.operations import CollectionOp, QueryOp
 from aqt.utils import showInfo, showWarning
 
 from .config import ConfigError, load_config
 from .gateway import (
+    AnkiFsrsPresetGateway,
+    MemoryStateRewriteProgress,
+    MemoryStateRewriteResult,
     count_cards_by_preset,
     deck_unselected_counts,
     optimize_preset,
     optimize_presets_batch,
+    rewrite_memory_states_for_presets,
 )
 from .gateway import same_day_optimize_setting
 from .models import (
     AddonFsrsPresetConfig,
+    DynamicPresetSelectionConfig,
     FsrsPresetVersion,
     preset_id_from_name,
 )
@@ -98,6 +103,11 @@ class _RowProgressUpdate:
         self.label = ""
 
 
+class _MemoryRewriteUiState:
+    def __init__(self) -> None:
+        self.latest: MemoryStateRewriteProgress | None = None
+
+
 class FsrsPresetConfigDialog(QDialog):
     def __init__(self, parent: QWidget, *, addon_manager: Any, module: str) -> None:
         super().__init__(parent, Qt.WindowType.Window)
@@ -110,6 +120,7 @@ class FsrsPresetConfigDialog(QDialog):
         self._single_optimize_running = False
         self._single_optimize_queue: list[QTreeWidgetItem] = []
         self._single_optimize_progress_timer: QTimer | None = None
+        self._memory_rewrite_progress_timer: QTimer | None = None
 
         self.setWindowTitle("FSRS Dynamic Preset Selection")
         self.resize(1280, 640)
@@ -837,9 +848,7 @@ class FsrsPresetConfigDialog(QDialog):
             getattr(self, "_stop_item_backend_progress", lambda: None)()
             self._line_edit(item, COL_PARAMS).setText(_format_params(result.params))
             self._apply_optimized_adr(item, preset, result)
-            self._set_item_progress(item, value=100, text="Done")
-            self._set_optimize_button(item)
-            FsrsPresetConfigDialog._finish_optimize_item(self)
+            self._start_single_memory_state_rewrite(item)
 
         def on_failure(exc: Exception) -> None:
             getattr(self, "_stop_item_backend_progress", lambda: None)()
@@ -922,10 +931,8 @@ class FsrsPresetConfigDialog(QDialog):
             for item, preset, result in zip(items, presets, results, strict=False):
                 self._line_edit(item, COL_PARAMS).setText(_format_params(result.params))
                 self._apply_optimized_adr(item, preset, result)
-                self._set_item_progress(item, value=100, text="Done")
-            self._hide_optimize_all_progress()
-            self._restore_all_item_optimize_buttons(items)
-            showInfo(f"Optimized {len(results)} presets.", parent=self)
+                self._set_item_progress(item, value=100, text="Optimized")
+            self._start_all_memory_state_rewrite(items, len(results))
 
         def on_failure(exc: Exception) -> None:
             self._hide_optimize_all_progress()
@@ -954,6 +961,12 @@ class FsrsPresetConfigDialog(QDialog):
     def _optimization_presets_and_rules(
         self,
     ) -> tuple[list[AddonFsrsPresetConfig], list[dict[str, str]]]:
+        config, ordered_rules = self._optimization_config_and_rules()
+        return list(config.presets), ordered_rules
+
+    def _optimization_config_and_rules(
+        self,
+    ) -> tuple[DynamicPresetSelectionConfig, list[dict[str, str]]]:
         preset_dicts = self._preset_dicts()
         config = load_config(
             {
@@ -962,10 +975,181 @@ class FsrsPresetConfigDialog(QDialog):
             }
         )
         ordered_rules = config.to_overlay_dict()["rules"]
-        presets = list(config.presets)
         if not ordered_rules:
             raise ConfigError("choose a deck or enter a search filter before optimizing")
-        return presets, ordered_rules
+        return config, ordered_rules
+
+    def _start_single_memory_state_rewrite(self, item: QTreeWidgetItem) -> None:
+        try:
+            config, presets, ordered_rules = self._memory_rewrite_context([item])
+        except (ConfigError, ValueError) as exc:
+            self._set_optimize_button(item)
+            showWarning(f"Unable to rewrite memory states:\n\n{exc}", parent=self)
+            FsrsPresetConfigDialog._finish_optimize_item(self)
+            return
+        except Exception as exc:
+            self._set_optimize_button(item)
+            showWarning(f"Unable to rewrite memory states:\n\n{exc}", parent=self)
+            FsrsPresetConfigDialog._finish_optimize_item(self)
+            return
+
+        state = _MemoryRewriteUiState()
+        self._set_item_progress(item, value=0, maximum=0, text="Updating memory...")
+        self._start_memory_rewrite_progress_timer([item], state, update_all=False)
+
+        def on_success(_result: MemoryStateRewriteResult) -> None:
+            self._stop_memory_rewrite_progress_timer()
+            self._set_item_progress(item, value=100, text="Done")
+            self._set_optimize_button(item)
+            FsrsPresetConfigDialog._finish_optimize_item(self)
+
+        def on_failure(exc: Exception) -> None:
+            self._stop_memory_rewrite_progress_timer()
+            self._set_optimize_button(item)
+            showWarning(f"Unable to rewrite memory states:\n\n{exc}", parent=self)
+            FsrsPresetConfigDialog._finish_optimize_item(self)
+
+        CollectionOp(
+            parent=self,
+            op=lambda col: _apply_overlay_and_rewrite_memory_states(
+                col,
+                config,
+                presets,
+                ordered_rules,
+                state,
+            ),
+        ).success(on_success).failure(on_failure).run_in_background()
+
+    def _start_all_memory_state_rewrite(
+        self, items: list[QTreeWidgetItem], optimized_count: int
+    ) -> None:
+        try:
+            config, presets, ordered_rules = self._memory_rewrite_context(items)
+        except (ConfigError, ValueError) as exc:
+            self._hide_optimize_all_progress()
+            self._restore_all_item_optimize_buttons(items)
+            showWarning(f"Unable to rewrite memory states:\n\n{exc}", parent=self)
+            return
+        except Exception as exc:
+            self._hide_optimize_all_progress()
+            self._restore_all_item_optimize_buttons(items)
+            showWarning(f"Unable to rewrite memory states:\n\n{exc}", parent=self)
+            return
+
+        state = _MemoryRewriteUiState()
+        self.optimize_all_progress.setFormat("Memory %v/%m")
+        self._update_optimize_all_progress(0, max(len(presets), 1))
+        for item in items:
+            self._set_item_progress(item, value=0, maximum=0, text="Memory pending")
+        self._start_memory_rewrite_progress_timer(items, state, update_all=True)
+
+        def on_success(result: MemoryStateRewriteResult) -> None:
+            self._stop_memory_rewrite_progress_timer()
+            for item in items:
+                self._set_item_progress(item, value=100, text="Done")
+            self._hide_optimize_all_progress()
+            self._restore_all_item_optimize_buttons(items)
+            showInfo(
+                "Optimized "
+                f"{optimized_count} presets. Rewrote FSRS memory state for "
+                f"{result.cards_updated} cards.",
+                parent=self,
+            )
+
+        def on_failure(exc: Exception) -> None:
+            self._stop_memory_rewrite_progress_timer()
+            self._hide_optimize_all_progress()
+            self._restore_all_item_optimize_buttons(items)
+            showWarning(f"Unable to rewrite memory states:\n\n{exc}", parent=self)
+
+        CollectionOp(
+            parent=self,
+            op=lambda col: _apply_overlay_and_rewrite_memory_states(
+                col,
+                config,
+                presets,
+                ordered_rules,
+                state,
+            ),
+        ).success(on_success).failure(on_failure).run_in_background()
+
+    def _memory_rewrite_context(
+        self, items: list[QTreeWidgetItem]
+    ) -> tuple[
+        DynamicPresetSelectionConfig,
+        list[AddonFsrsPresetConfig],
+        list[dict[str, str]],
+    ]:
+        config, ordered_rules = self._optimization_config_and_rules()
+        leaf_items = self._leaf_items()
+        selected_indexes = [leaf_items.index(item) for item in items]
+        return (
+            config,
+            [list(config.presets)[index] for index in selected_indexes],
+            ordered_rules,
+        )
+
+    def _start_memory_rewrite_progress_timer(
+        self,
+        items: list[QTreeWidgetItem],
+        state: _MemoryRewriteUiState,
+        *,
+        update_all: bool,
+    ) -> None:
+        self._stop_memory_rewrite_progress_timer()
+        timer = QTimer(self)
+        self._memory_rewrite_progress_timer = timer
+
+        def on_progress() -> None:
+            progress = state.latest
+            if progress is None:
+                return
+            if update_all:
+                self._update_all_memory_rewrite_progress(items, progress)
+            else:
+                self._update_item_memory_rewrite_progress(items[0], progress)
+
+        qconnect(timer.timeout, on_progress)
+        timer.start(100)
+
+    def _stop_memory_rewrite_progress_timer(self) -> None:
+        timer = getattr(self, "_memory_rewrite_progress_timer", None)
+        if timer is None:
+            return
+        timer.stop()
+        timer.deleteLater()
+        self._memory_rewrite_progress_timer = None
+
+    def _update_item_memory_rewrite_progress(
+        self, item: QTreeWidgetItem, progress: MemoryStateRewriteProgress
+    ) -> None:
+        maximum = max(progress.total, 1)
+        current = min(progress.current, maximum)
+        self._set_item_progress(
+            item,
+            value=current,
+            maximum=maximum,
+            text=_memory_rewrite_progress_text(progress),
+        )
+
+    def _update_all_memory_rewrite_progress(
+        self,
+        items: list[QTreeWidgetItem],
+        progress: MemoryStateRewriteProgress,
+    ) -> None:
+        active_index = progress.preset_index - 1
+        if 0 < active_index <= len(items):
+            self._set_item_progress(items[active_index - 1], value=100, text="Done")
+        if 0 <= active_index < len(items):
+            self._update_item_memory_rewrite_progress(items[active_index], progress)
+
+        completed_presets = active_index
+        if progress.total == 0 or progress.current >= progress.total:
+            completed_presets = progress.preset_index
+        self._update_optimize_all_progress(
+            completed_presets,
+            max(progress.preset_count, 1),
+        )
 
     def _set_all_item_progress_pending(self, items: list[QTreeWidgetItem]) -> None:
         for item in items:
@@ -1340,6 +1524,49 @@ class FsrsPresetConfigDialog(QDialog):
 
 def _format_params(params: tuple[float, ...]) -> str:
     return ", ".join(f"{param:g}" for param in params)
+
+
+def _apply_overlay_and_rewrite_memory_states(
+    collection: Any,
+    config: DynamicPresetSelectionConfig,
+    presets: list[AddonFsrsPresetConfig],
+    ordered_rules: list[dict[str, str]],
+    state: _MemoryRewriteUiState,
+) -> MemoryStateRewriteResult:
+    overlay_changes = AnkiFsrsPresetGateway(collection).apply(config)
+    result = rewrite_memory_states_for_presets(
+        collection,
+        presets,
+        ordered_rules,
+        progress=lambda progress: setattr(state, "latest", progress),
+    )
+    return _with_op_changes(result, overlay_changes)
+
+
+def _with_op_changes(
+    result: MemoryStateRewriteResult,
+    fallback_changes: Any | None,
+) -> MemoryStateRewriteResult:
+    if result.changes is not None:
+        return result
+    if fallback_changes is not None:
+        return MemoryStateRewriteResult(
+            cards_found=result.cards_found,
+            cards_updated=result.cards_updated,
+            changes=fallback_changes,
+        )
+
+    from anki.collection import OpChanges
+
+    return MemoryStateRewriteResult(
+        cards_found=result.cards_found,
+        cards_updated=result.cards_updated,
+        changes=OpChanges(),
+    )
+
+
+def _memory_rewrite_progress_text(progress: MemoryStateRewriteProgress) -> str:
+    return f"Memory {progress.current}/{progress.total}"
 
 
 def _parse_params(text: str) -> list[float]:
